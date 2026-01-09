@@ -1,5 +1,8 @@
 <?php
 require_once __DIR__ . '/../app/includes/bootstrap.php';
 
-echo "<h1>" . h(($config['app_name'] ?? 'EasyRace')) . " avviato</h1>";
-echo "<p>Ambiente: " . h(($config['env'] ?? 'local')) . "</p>";
+$appName = $config['app_name'] ?? 'EasyRace';
+$env = $config['env'] ?? 'local';
+
+echo "<h1>{$appName} avviato</h1>";
+echo "<p>Ambiente: {$env}</p>";
