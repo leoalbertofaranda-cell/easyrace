@@ -1,0 +1,22 @@
+# OS
+.DS_Store
+
+# MAMP
+/tmp/
+logs/
+php_error.log
+
+# Editor
+.vscode/
+.idea/
+
+# Env / config sensibili
+.env
+config.local.php
+
+# Upload / runtime
+uploads/
+cache/
+
+# Node (se mai lo userai)
+node_modules/
