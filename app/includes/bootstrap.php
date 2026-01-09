@@ -12,3 +12,4 @@ error_reporting(E_ALL);
 function h(string $s): string {
   return htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
 }
+require_once __DIR__ . '/db.php';
