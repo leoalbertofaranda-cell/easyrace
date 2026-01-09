@@ -1,2 +1,4 @@
+cat > public/.htaccess <<'TXT'
 Options -Indexes
 DirectoryIndex index.php
+TXT
