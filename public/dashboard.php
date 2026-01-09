@@ -17,6 +17,8 @@ $u = auth_user();
   <p><a href="logout.php">Logout</a></p>
 
   <p><a href="organizations.php">Organizzazioni</a></p>
+  <p><a href="events.php">Eventi</a></p>
+
 
 
 </body>
