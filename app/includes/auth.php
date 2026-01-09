@@ -40,3 +40,20 @@ function require_login(): void {
     exit;
   }
 }
+
+function auth_role(): string {
+  $u = auth_user();
+  return $u['role'] ?? '';
+}
+
+function require_roles(array $roles): void {
+  $role = auth_role();
+  if (!in_array($role, $roles, true)) {
+    header("HTTP/1.1 403 Forbidden");
+    exit("Accesso negato.");
+  }
+}
+
+function require_manage(): void {
+  require_roles(['superuser','admin','organizer']);
+}

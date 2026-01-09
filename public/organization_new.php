@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../app/includes/bootstrap.php';
 require_login();
+require_manage();
 
 $u = auth_user();
 $conn = db($config);

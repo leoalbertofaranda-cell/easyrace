@@ -19,6 +19,13 @@ $u = auth_user();
   <p><a href="organizations.php">Organizzazioni</a></p>
   <p><a href="events.php">Eventi</a></p>
 
+  <?php if (in_array(($u['role'] ?? ''), ['superuser','admin','organizer'], true)): ?>
+  <p><a href="organizations.php">Organizzazioni</a></p>
+  <p><a href="events.php">Eventi</a></p>
+<?php else: ?>
+  <p>Account atleta: gestione non disponibile.</p>
+<?php endif; ?>
+
 
 
 </body>
