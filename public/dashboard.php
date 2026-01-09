@@ -16,15 +16,13 @@ $u = auth_user();
   <p>Ciao <?php echo htmlspecialchars($u['full_name'], ENT_QUOTES, 'UTF-8'); ?> (<?php echo htmlspecialchars($u['role'], ENT_QUOTES, 'UTF-8'); ?>)</p>
   <p><a href="logout.php">Logout</a></p>
 
-  <p><a href="organizations.php">Organizzazioni</a></p>
-  <p><a href="events.php">Eventi</a></p>
-
-  <?php if (in_array(($u['role'] ?? ''), ['superuser','admin','organizer'], true)): ?>
+<?php if (in_array(($u['role'] ?? ''), ['superuser','admin','organizer'], true)): ?>
   <p><a href="organizations.php">Organizzazioni</a></p>
   <p><a href="events.php">Eventi</a></p>
 <?php else: ?>
   <p>Account atleta: gestione non disponibile.</p>
 <?php endif; ?>
+
 
 
 
