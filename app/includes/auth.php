@@ -16,12 +16,32 @@ function auth_user(): ?array {
 function auth_login(array $user): void {
   auth_start_session();
   session_regenerate_id(true);
+
   $_SESSION['auth'] = [
-    'id' => (int)$user['id'],
-    'email' => (string)$user['email'],
-    'full_name' => (string)$user['full_name'],
-    'role' => (string)$user['role'],
+    'id'         => (int)($user['id'] ?? 0),
+    'email'      => (string)($user['email'] ?? ''),
+    'full_name'  => (string)($user['full_name'] ?? ''),
+    'role'       => (string)($user['role'] ?? ''),
+
+    // campi anagrafici (servono per categorie, iscrizioni, ecc.)
+    'birth_date' => $user['birth_date'] ?? null,         // 'YYYY-MM-DD' oppure null
+    'gender'     => (string)($user['gender'] ?? 'X'),     // 'M' | 'F' | 'X'
   ];
+}
+
+/**
+ * Aggiorna alcuni campi dell’utente in sessione (utile dopo update profilo).
+ * Passa solo i campi che vuoi aggiornare.
+ */
+function auth_refresh(array $fields): void {
+  auth_start_session();
+  if (empty($_SESSION['auth']) || !is_array($_SESSION['auth'])) return;
+
+  foreach (['full_name','email','role','birth_date','gender'] as $k) {
+    if (array_key_exists($k, $fields)) {
+      $_SESSION['auth'][$k] = $fields[$k];
+    }
+  }
 }
 
 function auth_logout(): void {
@@ -43,7 +63,7 @@ function require_login(): void {
 
 function auth_role(): string {
   $u = auth_user();
-  return $u['role'] ?? '';
+  return (string)($u['role'] ?? '');
 }
 
 function require_roles(array $roles): void {
@@ -56,4 +76,13 @@ function require_roles(array $roles): void {
 
 function require_manage(): void {
   require_roles(['superuser','admin','organizer']);
+}
+
+function can_manage(): bool {
+  $r = auth_role();
+  return in_array($r, ['superuser','admin','organizer'], true);
+}
+
+function is_athlete(): bool {
+  return auth_role() === 'athlete';
 }

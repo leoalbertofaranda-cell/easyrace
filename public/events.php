@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__ . '/../app/includes/bootstrap.php';
+require_once __DIR__ . '/../app/includes/layout.php';
+
 require_login();
 require_manage();
 
@@ -36,52 +38,49 @@ if ($org_id > 0) {
   $events = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
   $stmt->close();
 }
+
+page_header('Eventi');
 ?>
-<!doctype html>
-<html lang="it">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>EasyRace - Eventi</title></head>
-<body style="font-family:system-ui;max-width:980px;margin:40px auto;padding:0 16px;">
-  <h1>Eventi</h1>
-  <p><a href="dashboard.php">Dashboard</a> · <a href="organizations.php">Organizzazioni</a> · <a href="logout.php">Logout</a></p>
 
-  <?php if (!$orgs): ?>
-    <p>Prima crea un’organizzazione.</p>
+<?php if (!$orgs): ?>
+  <p>Prima crea un’organizzazione.</p>
+<?php else: ?>
+
+  <form method="get" style="margin: 16px 0;">
+    <label><b>Organizzazione</b></label><br>
+    <select name="org_id" style="padding:10px;min-width:320px" onchange="this.form.submit()">
+      <?php foreach ($orgs as $o): ?>
+        <option value="<?php echo (int)$o['id']; ?>" <?php echo ((int)$o['id'] === $org_id ? 'selected' : ''); ?>>
+          <?php echo h($o['name']); ?>
+        </option>
+      <?php endforeach; ?>
+    </select>
+    <noscript><button type="submit" style="padding:10px 14px;">Vai</button></noscript>
+  </form>
+
+  <p><a href="event_new.php?org_id=<?php echo (int)$org_id; ?>">+ Nuovo evento</a></p>
+
+  <?php if (!$events): ?>
+    <p>Nessun evento per questa organizzazione.</p>
   <?php else: ?>
-    <form method="get" style="margin: 16px 0;">
-      <label><b>Organizzazione</b></label><br>
-      <select name="org_id" style="padding:10px;min-width:320px" onchange="this.form.submit()">
-        <?php foreach ($orgs as $o): ?>
-          <option value="<?php echo (int)$o['id']; ?>" <?php echo ((int)$o['id']===$org_id?'selected':''); ?>>
-            <?php echo htmlspecialchars($o['name'], ENT_QUOTES, 'UTF-8'); ?>
-          </option>
+    <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;">
+      <thead>
+        <tr><th>Titolo</th><th>Dal</th><th>Al</th><th>Stato</th><th></th></tr>
+      </thead>
+      <tbody>
+        <?php foreach ($events as $e): ?>
+          <tr>
+            <td><?php echo h($e['title']); ?></td>
+            <td><?php echo h($e['starts_on'] ?? ''); ?></td>
+            <td><?php echo h($e['ends_on'] ?? ''); ?></td>
+            <td><?php echo h($e['status']); ?></td>
+            <td><a href="event_detail.php?id=<?php echo (int)$e['id']; ?>">Apri</a></td>
+          </tr>
         <?php endforeach; ?>
-      </select>
-      <noscript><button type="submit" style="padding:10px 14px;">Vai</button></noscript>
-    </form>
-
-    <p><a href="event_new.php?org_id=<?php echo (int)$org_id; ?>">+ Nuovo evento</a></p>
-
-    <?php if (!$events): ?>
-      <p>Nessun evento per questa organizzazione.</p>
-    <?php else: ?>
-      <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;">
-        <thead>
-          <tr><th>Titolo</th><th>Dal</th><th>Al</th><th>Stato</th><th></th></tr>
-        </thead>
-        <tbody>
-          <?php foreach ($events as $e): ?>
-            <tr>
-              <td><?php echo htmlspecialchars($e['title'], ENT_QUOTES, 'UTF-8'); ?></td>
-              <td><?php echo htmlspecialchars($e['starts_on'] ?? '', ENT_QUOTES, 'UTF-8'); ?></td>
-              <td><?php echo htmlspecialchars($e['ends_on'] ?? '', ENT_QUOTES, 'UTF-8'); ?></td>
-              <td><?php echo htmlspecialchars($e['status'], ENT_QUOTES, 'UTF-8'); ?></td>
-              <td><a href="event_detail.php?id=<?php echo (int)$e['id']; ?>">Apri</a></td>
-            </tr>
-          <?php endforeach; ?>
-        </tbody>
-      </table>
-    <?php endif; ?>
+      </tbody>
+    </table>
   <?php endif; ?>
-</body>
-</html>
+
+<?php endif; ?>
+
+<?php page_footer(); ?>

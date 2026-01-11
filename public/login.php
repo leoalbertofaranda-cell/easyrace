@@ -19,6 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       $stmt->bind_param("s", $email);
       $stmt->execute();
       $user = $stmt->get_result()->fetch_assoc();
+     
       $stmt->close();
 
       if (!$user || (int)$user['is_active'] !== 1) {

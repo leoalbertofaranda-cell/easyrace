@@ -2,52 +2,52 @@
 require_once __DIR__ . '/../app/includes/bootstrap.php';
 require_once __DIR__ . '/../app/includes/layout.php';
 
-require_login();
-require_manage();
-
-$u = auth_user();
 $conn = db($config);
 
 $id = (int)($_GET['id'] ?? 0);
-if ($id <= 0) { header("Location: events.php"); exit; }
+if ($id <= 0) { header("Location: calendar.php"); exit; }
 
-// evento
+// evento + org
 $stmt = $conn->prepare("
-  SELECT e.*
+  SELECT e.*, o.name AS org_name
   FROM events e
-  JOIN organization_users ou ON ou.organization_id = e.organization_id
-  WHERE e.id=? AND ou.user_id=?
+  JOIN organizations o ON o.id = e.organization_id
+  WHERE e.id=?
   LIMIT 1
 ");
-$stmt->bind_param("ii", $id, $u['id']);
+$stmt->bind_param("i", $id);
 $stmt->execute();
 $event = $stmt->get_result()->fetch_assoc();
 $stmt->close();
 
-if (!$event) { header("Location: events.php"); exit; }
+if (!$event) {
+  header("HTTP/1.1 404 Not Found");
+  exit("Evento non trovato.");
+}
 
 // gare
-$stmt = $conn->prepare("SELECT id,title,location,start_at,discipline,status FROM races WHERE event_id=? ORDER BY start_at ASC, id ASC");
+$stmt = $conn->prepare("
+  SELECT id,title,location,start_at,discipline,status
+  FROM races
+  WHERE event_id=?
+  ORDER BY start_at ASC, id ASC
+");
 $stmt->bind_param("i", $id);
 $stmt->execute();
 $races = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
 
-$pageTitle = 'Evento: ' . ($event['title'] ?? '');
-page_header($pageTitle);
+page_header('Evento: ' . ($event['title'] ?? ''));
 ?>
 
 <p>
-  <a href="events.php?org_id=<?php echo (int)$event['organization_id']; ?>">← Eventi</a>
-  · <a href="race_new.php?event_id=<?php echo (int)$event['id']; ?>">+ Nuova gara</a>
+  <a href="calendar.php">← Calendario</a>
 </p>
 
 <p>
-  <b>Periodo:</b>
-  <?php echo h($event['starts_on'] ?? '-'); ?>
-  →
-  <?php echo h($event['ends_on'] ?? '-'); ?>
-  · <b>Stato:</b> <?php echo h($event['status'] ?? ''); ?>
+  <b>Organizzazione:</b> <?php echo h($event['org_name'] ?? ''); ?><br>
+  <b>Periodo:</b> <?php echo h($event['starts_on'] ?? '-'); ?> → <?php echo h($event['ends_on'] ?? '-'); ?><br>
+  <b>Stato:</b> <?php echo h($event['status'] ?? '-'); ?>
 </p>
 
 <?php if (!empty($event['description'])): ?>
@@ -71,7 +71,7 @@ page_header($pageTitle);
           <td><?php echo h($r['start_at'] ?? ''); ?></td>
           <td><?php echo h($r['discipline'] ?? ''); ?></td>
           <td><?php echo h($r['status'] ?? ''); ?></td>
-          <td><a href="race.php?id=<?php echo (int)$r['id']; ?>">Apri</a></td>
+          <td><a href="race_public.php?id=<?php echo (int)$r['id']; ?>">Apri</a></td>
         </tr>
       <?php endforeach; ?>
     </tbody>
