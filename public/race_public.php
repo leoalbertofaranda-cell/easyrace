@@ -1,9 +1,18 @@
 <?php
+// public/race_public.php
+declare(strict_types=1);
+
 require_once __DIR__ . '/../app/includes/bootstrap.php';
 require_once __DIR__ . '/../app/includes/layout.php';
 require_once __DIR__ . '/../app/includes/categories.php';
 
 $conn = db($config);
+
+if (!function_exists('h')) {
+  function h($s): string {
+    return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+  }
+}
 
 $race_id = (int)($_GET['id'] ?? 0);
 if ($race_id <= 0) { header("Location: calendar.php"); exit; }
@@ -23,41 +32,28 @@ $stmt->execute();
 $race = $stmt->get_result()->fetch_assoc();
 $stmt->close();
 
-
 if (!$race) {
   header("HTTP/1.1 404 Not Found");
   exit("Gara non trovata (o evento non pubblicato).");
 }
 
-$role = current_role();
+// Ruolo/loggato
+$role = function_exists('current_role') ? current_role() : '';
 $logged = !empty($role);
-$error = '';
 
 $u = null;
 if ($logged && function_exists('auth_user')) {
   $u = auth_user();
 }
 
+$error = '';
+
 // Iscrizioni consentite solo se gara open
 $canRegister = (($race['status'] ?? '') === 'open');
 
-// Iscritti pubblici: solo confermati, ordine alfabetico
-$publicRegs = [];
-$stmt = $conn->prepare("
-  SELECT u.first_name, u.last_name, u.club_name, u.city
-  FROM registrations r
-  JOIN users u ON u.id = r.user_id
-  WHERE r.race_id = ? AND r.status = 'confirmed'
-  ORDER BY u.last_name ASC, u.first_name ASC
-");
-$stmt->bind_param("i", $race_id);
-$stmt->execute();
-$publicRegs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-$stmt->close();
-
 // Stato iscrizione dell'utente (solo atleta)
 $myReg = null;
-if ($role === 'athlete' && !empty($u['id'])) {
+if (($role ?? '') === 'athlete' && !empty($u['id'])) {
   $stmt = $conn->prepare("SELECT id,status,created_at FROM registrations WHERE race_id=? AND user_id=? LIMIT 1");
   $stmt->bind_param("ii", $race_id, $u['id']);
   $stmt->execute();
@@ -65,71 +61,248 @@ if ($role === 'athlete' && !empty($u['id'])) {
   $stmt->close();
 }
 
-// Azioni atleta: register / cancel (solo se open)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && $role === 'athlete' && !empty($u['id'])) {
+// ======================================================
+// POST ATLETA: register / cancel (solo se open)
+// ======================================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !empty($u['id'])) {
+
   if (!$canRegister) {
     $error = "Iscrizioni chiuse.";
   } else {
-    $action = $_POST['action'] ?? '';
 
-if ($action === 'register') {
-  try {
+    $action = (string)($_POST['action'] ?? '');
 
-    // 1) dati atleta
-    $birth_year = (int)date('Y', strtotime($u['birth_date']));
-    $gender     = $u['gender'];
+    // -------------------------
+    // REGISTER
+    // -------------------------
+    if ($action === 'register') {
+      try {
+        // se c'è una reg attiva non cancelled, blocca
+        if ($myReg && ($myReg['status'] ?? '') !== 'cancelled') {
+          throw new RuntimeException("Sei già iscritto a questa gara.");
+        }
 
-    // 2) dati gara → regolamento
-    $rulebook_id = (int)$race['rulebook_id'];
-$season_id   = (int)$race['rulebook_season_id'];
+        // --------------------------------------
+        // Determinazione rulebook_season_id (robusta)
+        // --------------------------------------
+        $season_id   = (int)($race['rulebook_season_id'] ?? 0);
+        $rulebook_id = (int)($race['rulebook_id'] ?? 0);
 
-    // 3) calcolo categoria
-    $cat = get_category_for_athlete_by_season(
-    $rulebook_id,
-    $season_id,
-    $gender,
-    $birth_year,
-    $conn
-);
+        // fallback fisso: FCI (dal tuo DB = 2)
+        if ($rulebook_id <= 0) $rulebook_id = 2;
 
-    if (!$cat) {
-      throw new Exception("Categoria non determinabile.");
+        // 1) stagione attiva
+        if ($season_id <= 0) {
+          $stmt = $conn->prepare("
+            SELECT id
+            FROM rulebook_seasons
+            WHERE rulebook_id = ? AND is_active = 1
+            LIMIT 1
+          ");
+          $stmt->bind_param("i", $rulebook_id);
+          $stmt->execute();
+          $row = $stmt->get_result()->fetch_assoc();
+          $stmt->close();
+          $season_id = (int)($row['id'] ?? 0);
+        }
+
+        // 2) stagione per anno gara
+        if ($season_id <= 0) {
+          $startAt = (string)($race['start_at'] ?? '');
+          if ($startAt !== '') {
+            $raceYear = (int)date('Y', strtotime($startAt));
+            $stmt = $conn->prepare("
+              SELECT id
+              FROM rulebook_seasons
+              WHERE rulebook_id = ? AND season_year = ?
+              LIMIT 1
+            ");
+            $stmt->bind_param("ii", $rulebook_id, $raceYear);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            $season_id = (int)($row['id'] ?? 0);
+          }
+        }
+
+        // 3) ultima stagione disponibile
+        if ($season_id <= 0) {
+          $stmt = $conn->prepare("
+            SELECT id
+            FROM rulebook_seasons
+            WHERE rulebook_id = ?
+            ORDER BY season_year DESC
+            LIMIT 1
+          ");
+          $stmt->bind_param("i", $rulebook_id);
+          $stmt->execute();
+          $row = $stmt->get_result()->fetch_assoc();
+          $stmt->close();
+          $season_id = (int)($row['id'] ?? 0);
+        }
+
+        if ($season_id <= 0) {
+          throw new RuntimeException("Impossibile determinare la stagione (rulebook_season_id).");
+        }
+
+        // ----------------------------------------------------
+        // Dati atleta: fonte unica = athlete_profile (NON sessione)
+        // ----------------------------------------------------
+        $stmt = $conn->prepare("SELECT birth_date, gender FROM athlete_profile WHERE user_id=? LIMIT 1");
+        if (!$stmt) throw new RuntimeException("Errore DB (prepare atleta): " . h($conn->error));
+        $stmt->bind_param("i", $u['id']);
+        $stmt->execute();
+        $ap = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        $birth_date = (string)($ap['birth_date'] ?? '');
+        $gender     = (string)($ap['gender'] ?? '');
+
+        if ($birth_date === '' || $gender === '') {
+          throw new RuntimeException("Profilo atleta incompleto: data di nascita e/o sesso mancanti.");
+        }
+
+        // 2) calcolo categoria (CODE es. M5)
+        $cat_code = get_category_for_athlete_by_season($conn, $season_id, $birth_date, $gender);
+        if (!$cat_code) {
+          throw new RuntimeException("Categoria non trovata (season_id={$season_id}, birth_date={$birth_date}, gender={$gender}).");
+        }
+
+        // 3) recupero id + label da rulebook_categories
+        $stmt = $conn->prepare("SELECT rulebook_id, season_year FROM rulebook_seasons WHERE id=? LIMIT 1");
+        $stmt->bind_param("i", $season_id);
+        $stmt->execute();
+        $seasonRow = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$seasonRow) {
+          throw new RuntimeException("Stagione non trovata in rulebook_seasons (id={$season_id}).");
+        }
+
+        $rulebook_id = (int)$seasonRow['rulebook_id'];
+        $season_year = (int)$seasonRow['season_year'];
+
+        $stmt = $conn->prepare("
+          SELECT id, name
+          FROM rulebook_categories
+          WHERE rulebook_id = ? AND season_year = ? AND code = ?
+          LIMIT 1
+        ");
+        $stmt->bind_param("iis", $rulebook_id, $season_year, $cat_code);
+        $stmt->execute();
+        $catRow = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        $cat_id    = (int)($catRow['id'] ?? 0);
+        $cat_label = (string)($catRow['name'] ?? $cat_code);
+
+        // 4) UPSERT: se esiste già (race_id,user_id), aggiorna e rimette pending
+        $status = 'pending';
+
+        $stmt = $conn->prepare("
+          INSERT INTO registrations
+            (race_id, user_id, status, category_id, category_code, category_label)
+          VALUES
+            (?,?,?,?,?,?)
+          ON DUPLICATE KEY UPDATE
+            status         = VALUES(status),
+            category_id    = VALUES(category_id),
+            category_code  = VALUES(category_code),
+            category_label = VALUES(category_label)
+        ");
+        if (!$stmt) {
+          throw new RuntimeException("Errore DB (prepare): " . h($conn->error));
+        }
+
+        $stmt->bind_param(
+          "iisiss",
+          $race_id,
+          $u['id'],
+          $status,
+          $cat_id,
+          $cat_code,
+          $cat_label
+        );
+
+        if (!$stmt->execute()) {
+          $msg = $stmt->error ?: $conn->error;
+          $stmt->close();
+          throw new RuntimeException("Errore DB (execute): " . h($msg));
+        }
+        $stmt->close();
+
+        header("Location: race_public.php?id=" . $race_id);
+        exit;
+
+      } catch (Throwable $e) {
+        $error = "Iscrizione non completata: " . $e->getMessage();
+      }
     }
 
-    // 4) inserimento iscrizione con SNAPSHOT categoria
-    $status = 'pending';
+    // -------------------------
+    // CANCEL
+    // -------------------------
+    if ($action === 'cancel') {
+      try {
+        $status = 'cancelled';
+        $stmt = $conn->prepare("UPDATE registrations SET status=? WHERE race_id=? AND user_id=? LIMIT 1");
+        $stmt->bind_param("sii", $status, $race_id, $u['id']);
+        $stmt->execute();
+        $stmt->close();
 
-    $stmt = $conn->prepare("
-      INSERT INTO registrations
-      (race_id, user_id, status, category_id, category_code, category_label)
-      VALUES (?,?,?,?,?,?)
-    ");
+        header("Location: race_public.php?id=" . $race_id);
+        exit;
 
-    $stmt->bind_param(
-      "iissss",
-      $race_id,
-      $u['id'],
-      $status,
-      $cat['id'],
-      $cat['code'],
-      $cat['name']
-    );
-
-    $stmt->execute();
-    $stmt->close();
-
-    header("Location: race_public.php?id=".$race_id);
-    exit;
-
-  } catch (Throwable $e) {
-    $error = "Iscrizione non completata: " . $e->getMessage();
-  }
-}
+      } catch (Throwable $e) {
+        $error = "Annullamento non completato: " . $e->getMessage();
+      }
+    }
 
   }
 }
 
-page_header('Gara: ' . ($race['title'] ?? ''));
+// ======================================================
+// Iscritti pubblici: solo confermati, ordine alfabetico
+// (uso athlete_profile per nome/cognome/club/città)
+// ======================================================
+$publicRegs = [];
+$stmt = $conn->prepare("
+  SELECT
+    ap.first_name,
+    ap.last_name,
+    ap.club_name,
+    ap.city
+  FROM registrations r
+  JOIN athlete_profile ap ON ap.user_id = r.user_id
+  WHERE r.race_id = ? AND r.status = 'confirmed'
+  ORDER BY ap.last_name ASC, ap.first_name ASC
+");
+$stmt->bind_param("i", $race_id);
+$stmt->execute();
+$publicRegs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+$stmt->close();
+
+// Ricalcolo quota preview
+$base = (int)($race['base_fee_cents'] ?? 0);
+$ps = $conn->query("SELECT fee_type, fee_value FROM platform_settings LIMIT 1")->fetch_assoc();
+$platform_fee = calc_fee_cents($ps['fee_type'] ?? 'fixed', (int)($ps['fee_value'] ?? 0), $base);
+
+$admin_fee = 0;
+$ref_admin_id = (int)($race['ref_admin_id'] ?? 0);
+if ($ref_admin_id > 0) {
+  $stmt2 = $conn->prepare("SELECT fee_type, fee_value FROM admin_settings WHERE admin_user_id=? LIMIT 1");
+  $stmt2->bind_param("i", $ref_admin_id);
+  $stmt2->execute();
+  $as = $stmt2->get_result()->fetch_assoc();
+  $stmt2->close();
+  if ($as) $admin_fee = calc_fee_cents($as['fee_type'] ?? 'fixed', (int)($as['fee_value'] ?? 0), $base);
+}
+
+$raw_total  = $base + $platform_fee + $admin_fee;
+$paid_total = round_up_to_50_cents($raw_total);
+
+$pageTitle = 'Gara: ' . ($race['title'] ?? '');
+page_header($pageTitle);
 ?>
 
 <p>
@@ -145,29 +318,7 @@ page_header('Gara: ' . ($race['title'] ?? ''));
   <b>Stato gara:</b> <?php echo h($race['status'] ?? '-'); ?>
 </p>
 
-<?php
-$base = (int)($race['base_fee_cents'] ?? 0);
-
-// calcolo “preview” identico a quello di iscrizione (senza scrivere DB)
-$ps = $conn->query("SELECT fee_type, fee_value FROM platform_settings LIMIT 1")->fetch_assoc();
-$platform_fee = calc_fee_cents($ps['fee_type'] ?? 'fixed', (int)($ps['fee_value'] ?? 0), $base);
-
-$admin_fee = 0;
-$ref_admin_id = (int)($race['ref_admin_id'] ?? 0);
-if ($ref_admin_id > 0) {
-  $stmt2 = $conn->prepare("SELECT fee_type, fee_value FROM admin_settings WHERE admin_user_id=? LIMIT 1");
-  $stmt2->bind_param("i", $ref_admin_id);
-  $stmt2->execute();
-  $as = $stmt2->get_result()->fetch_assoc();
-  $stmt2->close();
-  if ($as) $admin_fee = calc_fee_cents($as['fee_type'] ?? 'fixed', (int)($as['fee_value'] ?? 0), $base);
-}
-
-$raw_total = $base + $platform_fee + $admin_fee;
-$paid_total = round_up_to_50_cents($raw_total);
-?>
 <p><b>Quota iscrizione:</b> € <?php echo h(cents_to_eur($paid_total)); ?></p>
-
 
 <?php if ($error): ?>
   <div style="padding:12px;background:#ffecec;border:1px solid #ffb3b3;margin:12px 0;">
@@ -185,7 +336,7 @@ $paid_total = round_up_to_50_cents($raw_total);
       <tr>
         <th>Nome</th>
         <th>Cognome</th>
-        <th>Club</th>
+        <th>Team / Club</th>
         <th>Città</th>
       </tr>
     </thead>
@@ -208,13 +359,14 @@ $paid_total = round_up_to_50_cents($raw_total);
   <p>Per iscriverti devi accedere.</p>
   <p><a href="login.php">Accedi</a></p>
 
-<?php elseif ($role !== 'athlete'): ?>
+<?php elseif (($role ?? '') !== 'athlete'): ?>
   <p>Sei loggato come <b><?php echo h($role); ?></b>. L’iscrizione è disponibile solo per account atleta.</p>
 
 <?php else: ?>
   <?php if (!$canRegister): ?>
     <p><b>Iscrizioni chiuse.</b></p>
   <?php else: ?>
+
     <?php if (!$myReg || ($myReg['status'] ?? '') === 'cancelled'): ?>
       <p>Non sei iscritto.</p>
       <form method="post">
@@ -231,6 +383,7 @@ $paid_total = round_up_to_50_cents($raw_total);
         <button type="submit" style="padding:10px 14px;">Annulla iscrizione</button>
       </form>
     <?php endif; ?>
+
   <?php endif; ?>
 <?php endif; ?>
 
