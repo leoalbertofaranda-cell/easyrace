@@ -5,20 +5,115 @@ declare(strict_types=1);
 require_once __DIR__ . '/../app/includes/bootstrap.php';
 require_once __DIR__ . '/../app/includes/layout.php';
 require_once __DIR__ . '/../app/includes/categories.php';
+require_once __DIR__ . '/../app/includes/fees.php';
 
 $conn = db($config);
 
-if (!function_exists('h')) {
-  function h($s): string {
-    return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
-  }
+/**
+ * Helper IT
+ */
+function it_status(string $s): string {
+  return match ($s) {
+    'confirmed' => 'Approvato',
+    'pending'   => 'In valutazione',
+    'cancelled' => 'Annullato',
+    'blocked'   => 'Bloccato',
+    default     => $s,
+  };
 }
 
+function it_reason(string $r): string {
+  return match ($r) {
+    'OK'                     => 'OK',
+    'PAYMENT_REQUIRED'       => 'Pagamento richiesto',
+    'MEMBERSHIP_NOT_ALLOWED' => 'Tesseramento non ammesso',
+    'CERT_MISSING'           => 'Certificato mancante',
+    'CERT_EXPIRED'           => 'Certificato scaduto',
+    default                  => $r,
+  };
+}
+
+function it_payment(string $p): string {
+  return match ($p) {
+    'paid'   => 'Pagato',
+    'unpaid' => 'Non pagato',
+    default  => $p,
+  };
+}
+
+function it_datetime(?string $dt): string {
+  if (!$dt) return '-';
+  $ts = strtotime($dt);
+  if (!$ts) return $dt;
+  return date('d/m/Y H:i', $ts);
+}
+
+/**
+ * Calcolo fee reale per gara.
+ * NB: base fee viene letto da riga races (preferenza: fee_cents, fallback: base_fee_cents).
+ */
+function compute_fees_for_race(mysqli $conn, array $race): array {
+  $race_fee_cents = 0;
+
+  if (isset($race['fee_cents'])) {
+    $race_fee_cents = (int)$race['fee_cents'];
+  } elseif (isset($race['base_fee_cents'])) {
+    $race_fee_cents = (int)$race['base_fee_cents'];
+  }
+
+  // Platform settings (global)
+  $platform = get_platform_settings($conn);
+
+  // Admin settings (opzionale, se la gara punta a un admin di riferimento)
+  $admin_fee_settings = [
+    'fee_type' => 'fixed',
+    'fee_value_cents' => 0,
+    'fee_value_bp' => null,
+    'round_to_cents' => (int)($platform['round_to_cents'] ?? 50),
+    'iban' => null,
+  ];
+
+  $ref_admin_id = (int)($race['ref_admin_id'] ?? 0);
+  if ($ref_admin_id > 0) {
+    $admin_fee_settings = get_admin_settings($conn, $ref_admin_id);
+    // se admin_settings non ha round_to_cents (ma lo ha), fallback coerente
+    if (empty($admin_fee_settings['round_to_cents'])) {
+      $admin_fee_settings['round_to_cents'] = (int)($platform['round_to_cents'] ?? 50);
+    }
+  }
+
+  $fees = calc_fees_total($race_fee_cents, $platform, $admin_fee_settings);
+
+  // organizer_net: per ora = base (poi lo colleghiamo alla logica reale delle fee platform/admin)
+  $organizer_net = $fees['race_fee_cents'];
+
+  return [
+    // campi "storici" già presenti nel tuo codice
+    'base_fee_cents'       => $fees['race_fee_cents'],
+    'platform_fee_cents'   => $fees['platform_fee_cents'],
+    'admin_fee_cents'      => $fees['admin_fee_cents'],
+
+    // nuovi campi (sinonimi più chiari)
+    'fee_race_cents'       => $fees['race_fee_cents'],
+    'fee_platform_cents'   => $fees['platform_fee_cents'],
+    'fee_admin_cents'      => $fees['admin_fee_cents'],
+
+    // totale
+    'fee_total_cents'      => $fees['total_cents'],
+
+    // per compatibilità con il tuo schema precedente (se esistono queste colonne)
+    'rounding_delta_cents' => 0,
+    'organizer_net_cents'  => $organizer_net,
+  ];
+}
+
+// ======================================================
+// LOAD RACE
+// ======================================================
 $race_id = (int)($_GET['id'] ?? 0);
 if ($race_id <= 0) { header("Location: calendar.php"); exit; }
 
 // Carico gara + evento + org (PUBBLICO)
-// Gara visibile se l'evento è published (anche se la gara è closed)
 $stmt = $conn->prepare("
   SELECT r.*, e.title AS event_title, e.id AS event_id, o.name AS org_name, e.status AS event_status
   FROM races r
@@ -38,7 +133,7 @@ if (!$race) {
 }
 
 // Ruolo/loggato
-$role = function_exists('current_role') ? current_role() : '';
+$role   = function_exists('current_role') ? (string)current_role() : '';
 $logged = !empty($role);
 
 $u = null;
@@ -54,7 +149,12 @@ $canRegister = (($race['status'] ?? '') === 'open');
 // Stato iscrizione dell'utente (solo atleta)
 $myReg = null;
 if (($role ?? '') === 'athlete' && !empty($u['id'])) {
-  $stmt = $conn->prepare("SELECT id,status,created_at FROM registrations WHERE race_id=? AND user_id=? LIMIT 1");
+  $stmt = $conn->prepare("
+    SELECT id, status, status_reason, payment_status, created_at
+    FROM registrations
+    WHERE race_id=? AND user_id=?
+    LIMIT 1
+  ");
   $stmt->bind_param("ii", $race_id, $u['id']);
   $stmt->execute();
   $myReg = $stmt->get_result()->fetch_assoc();
@@ -77,79 +177,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
     // -------------------------
     if ($action === 'register') {
       try {
-        // se c'è una reg attiva non cancelled, blocca
-        if ($myReg && ($myReg['status'] ?? '') !== 'cancelled') {
+
+        $st_now = (string)($myReg['status'] ?? '');
+        if ($myReg && $st_now !== '' && $st_now !== 'cancelled') {
           throw new RuntimeException("Sei già iscritto a questa gara.");
         }
 
-        // --------------------------------------
-        // Determinazione rulebook_season_id (robusta)
-        // --------------------------------------
+        // 1) Determina season_id (robusta)
         $season_id   = (int)($race['rulebook_season_id'] ?? 0);
         $rulebook_id = (int)($race['rulebook_id'] ?? 0);
-
-        // fallback fisso: FCI (dal tuo DB = 2)
         if ($rulebook_id <= 0) $rulebook_id = 2;
 
-        // 1) stagione attiva
         if ($season_id <= 0) {
-          $stmt = $conn->prepare("
-            SELECT id
-            FROM rulebook_seasons
-            WHERE rulebook_id = ? AND is_active = 1
-            LIMIT 1
-          ");
+          $stmt = $conn->prepare("SELECT id FROM rulebook_seasons WHERE rulebook_id=? AND is_active=1 LIMIT 1");
           $stmt->bind_param("i", $rulebook_id);
           $stmt->execute();
           $row = $stmt->get_result()->fetch_assoc();
           $stmt->close();
           $season_id = (int)($row['id'] ?? 0);
         }
-
-        // 2) stagione per anno gara
         if ($season_id <= 0) {
-          $startAt = (string)($race['start_at'] ?? '');
-          if ($startAt !== '') {
-            $raceYear = (int)date('Y', strtotime($startAt));
-            $stmt = $conn->prepare("
-              SELECT id
-              FROM rulebook_seasons
-              WHERE rulebook_id = ? AND season_year = ?
-              LIMIT 1
-            ");
-            $stmt->bind_param("ii", $rulebook_id, $raceYear);
-            $stmt->execute();
-            $row = $stmt->get_result()->fetch_assoc();
-            $stmt->close();
-            $season_id = (int)($row['id'] ?? 0);
-          }
-        }
-
-        // 3) ultima stagione disponibile
-        if ($season_id <= 0) {
-          $stmt = $conn->prepare("
-            SELECT id
-            FROM rulebook_seasons
-            WHERE rulebook_id = ?
-            ORDER BY season_year DESC
-            LIMIT 1
-          ");
+          $stmt = $conn->prepare("SELECT id FROM rulebook_seasons WHERE rulebook_id=? ORDER BY season_year DESC LIMIT 1");
           $stmt->bind_param("i", $rulebook_id);
           $stmt->execute();
           $row = $stmt->get_result()->fetch_assoc();
           $stmt->close();
           $season_id = (int)($row['id'] ?? 0);
         }
-
         if ($season_id <= 0) {
-          throw new RuntimeException("Impossibile determinare la stagione (rulebook_season_id).");
+          throw new RuntimeException("Stagione regolamento non trovata.");
         }
 
-        // ----------------------------------------------------
-        // Dati atleta: fonte unica = athlete_profile (NON sessione)
-        // ----------------------------------------------------
+        // 2) Athlete profile
         $stmt = $conn->prepare("SELECT birth_date, gender FROM athlete_profile WHERE user_id=? LIMIT 1");
-        if (!$stmt) throw new RuntimeException("Errore DB (prepare atleta): " . h($conn->error));
         $stmt->bind_param("i", $u['id']);
         $stmt->execute();
         $ap = $stmt->get_result()->fetch_assoc();
@@ -157,71 +217,109 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
 
         $birth_date = (string)($ap['birth_date'] ?? '');
         $gender     = (string)($ap['gender'] ?? '');
-
         if ($birth_date === '' || $gender === '') {
-          throw new RuntimeException("Profilo atleta incompleto: data di nascita e/o sesso mancanti.");
+          throw new RuntimeException("Profilo atleta incompleto.");
         }
 
-        // 2) calcolo categoria (CODE es. M5)
+        // 3) Categoria (per ora: salvo code + label = code)
         $cat_code = get_category_for_athlete_by_season($conn, $season_id, $birth_date, $gender);
         if (!$cat_code) {
-          throw new RuntimeException("Categoria non trovata (season_id={$season_id}, birth_date={$birth_date}, gender={$gender}).");
+          throw new RuntimeException("Categoria non trovata.");
+        }
+        $cat_code_db  = (string)$cat_code;
+        $cat_label_db = (string)$cat_code;
+
+        // 4) Fee reali
+        $fees = compute_fees_for_race($conn, $race);
+
+        $base_fee_cents_db       = (int)$fees['base_fee_cents'];
+        $platform_fee_cents_db   = (int)$fees['platform_fee_cents'];
+        $admin_fee_cents_db      = (int)$fees['admin_fee_cents'];
+        $rounding_delta_cents_db = (int)($fees['rounding_delta_cents'] ?? 0);
+        $fee_total_cents_db      = (int)$fees['fee_total_cents'];
+        $organizer_net_cents_db  = (int)($fees['organizer_net_cents'] ?? $base_fee_cents_db);
+        $paid_total_cents_db     = $fee_total_cents_db; // per ora uguale al totale
+
+        // nuovi campi (sinonimi)
+        $fee_race_cents_db       = (int)$fees['fee_race_cents'];
+        $fee_platform_cents_db   = (int)$fees['fee_platform_cents'];
+        $fee_admin_cents_db      = (int)$fees['fee_admin_cents'];
+
+        // 5) Stato
+        if ($fee_total_cents_db > 0) {
+          $status_db         = 'pending';
+          $status_reason_db  = 'PAYMENT_REQUIRED';
+          $payment_status_db = 'unpaid';
+          $confirmed_at_db   = null;
+        } else {
+          $status_db         = 'confirmed';
+          $status_reason_db  = 'OK';
+          $payment_status_db = 'paid';
+          $confirmed_at_db   = date('Y-m-d H:i:s');
         }
 
-        // 3) recupero id + label da rulebook_categories
-        $stmt = $conn->prepare("SELECT rulebook_id, season_year FROM rulebook_seasons WHERE id=? LIMIT 1");
-        $stmt->bind_param("i", $season_id);
-        $stmt->execute();
-        $seasonRow = $stmt->get_result()->fetch_assoc();
-        $stmt->close();
-
-        if (!$seasonRow) {
-          throw new RuntimeException("Stagione non trovata in rulebook_seasons (id={$season_id}).");
-        }
-
-        $rulebook_id = (int)$seasonRow['rulebook_id'];
-        $season_year = (int)$seasonRow['season_year'];
-
+        // 6) UPSERT
         $stmt = $conn->prepare("
-          SELECT id, name
-          FROM rulebook_categories
-          WHERE rulebook_id = ? AND season_year = ? AND code = ?
-          LIMIT 1
-        ");
-        $stmt->bind_param("iis", $rulebook_id, $season_year, $cat_code);
-        $stmt->execute();
-        $catRow = $stmt->get_result()->fetch_assoc();
-        $stmt->close();
-
-        $cat_id    = (int)($catRow['id'] ?? 0);
-        $cat_label = (string)($catRow['name'] ?? $cat_code);
-
-        // 4) UPSERT: se esiste già (race_id,user_id), aggiorna e rimette pending
-        $status = 'pending';
-
-        $stmt = $conn->prepare("
-          INSERT INTO registrations
-            (race_id, user_id, status, category_id, category_code, category_label)
-          VALUES
-            (?,?,?,?,?,?)
+          INSERT INTO registrations (
+            race_id, user_id,
+            status, status_reason, payment_status, confirmed_at,
+            base_fee_cents, platform_fee_cents, admin_fee_cents,
+            rounding_delta_cents, fee_total_cents, organizer_net_cents,
+            paid_total_cents,
+            fee_race_cents, fee_platform_cents, fee_admin_cents,
+            category_code, category_label
+          ) VALUES (
+            ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?,
+            ?, ?, ?,
+            ?,
+            ?, ?, ?,
+            ?, ?
+          )
           ON DUPLICATE KEY UPDATE
-            status         = VALUES(status),
-            category_id    = VALUES(category_id),
-            category_code  = VALUES(category_code),
+            status = VALUES(status),
+            status_reason = VALUES(status_reason),
+            payment_status = VALUES(payment_status),
+            confirmed_at = VALUES(confirmed_at),
+            base_fee_cents = VALUES(base_fee_cents),
+            platform_fee_cents = VALUES(platform_fee_cents),
+            admin_fee_cents = VALUES(admin_fee_cents),
+            rounding_delta_cents = VALUES(rounding_delta_cents),
+            fee_total_cents = VALUES(fee_total_cents),
+            organizer_net_cents = VALUES(organizer_net_cents),
+            paid_total_cents = VALUES(paid_total_cents),
+            fee_race_cents = VALUES(fee_race_cents),
+            fee_platform_cents = VALUES(fee_platform_cents),
+            fee_admin_cents = VALUES(fee_admin_cents),
+            category_code = VALUES(category_code),
             category_label = VALUES(category_label)
         ");
         if (!$stmt) {
           throw new RuntimeException("Errore DB (prepare): " . h($conn->error));
         }
 
+        // 18 placeholder => 18 tipi
         $stmt->bind_param(
-          "iisiss",
+          "iissssiiiiiiiiiiss",
           $race_id,
           $u['id'],
-          $status,
-          $cat_id,
-          $cat_code,
-          $cat_label
+          $status_db,
+          $status_reason_db,
+          $payment_status_db,
+          $confirmed_at_db,
+          $base_fee_cents_db,
+          $platform_fee_cents_db,
+          $admin_fee_cents_db,
+          $rounding_delta_cents_db,
+          $fee_total_cents_db,
+          $organizer_net_cents_db,
+          $paid_total_cents_db,
+          $fee_race_cents_db,
+          $fee_platform_cents_db,
+          $fee_admin_cents_db,
+          $cat_code_db,
+          $cat_label_db
         );
 
         if (!$stmt->execute()) {
@@ -245,7 +343,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
     if ($action === 'cancel') {
       try {
         $status = 'cancelled';
-        $stmt = $conn->prepare("UPDATE registrations SET status=? WHERE race_id=? AND user_id=? LIMIT 1");
+        $stmt = $conn->prepare("
+          UPDATE registrations
+          SET status = ?
+          WHERE race_id = ? AND user_id = ?
+          LIMIT 1
+        ");
         $stmt->bind_param("sii", $status, $race_id, $u['id']);
         $stmt->execute();
         $stmt->close();
@@ -262,19 +365,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
 }
 
 // ======================================================
-// Iscritti pubblici: solo confermati, ordine alfabetico
-// (uso athlete_profile per nome/cognome/club/città)
+// Iscritti pubblici: solo confermati
 // ======================================================
 $publicRegs = [];
 $stmt = $conn->prepare("
   SELECT
-    ap.first_name,
-    ap.last_name,
-    ap.club_name,
-    ap.city
+    COALESCE(ap.first_name, '') AS first_name,
+    COALESCE(ap.last_name,  '') AS last_name,
+    COALESCE(ap.club_name,  '') AS club_name,
+    COALESCE(ap.city,       '') AS city
   FROM registrations r
-  JOIN athlete_profile ap ON ap.user_id = r.user_id
-  WHERE r.race_id = ? AND r.status = 'confirmed'
+  LEFT JOIN athlete_profile ap ON ap.user_id = r.user_id
+  WHERE r.race_id = ? AND r.status = 'confirmed' AND r.payment_status = 'paid'
   ORDER BY ap.last_name ASC, ap.first_name ASC
 ");
 $stmt->bind_param("i", $race_id);
@@ -282,24 +384,9 @@ $stmt->execute();
 $publicRegs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
 
-// Ricalcolo quota preview
-$base = (int)($race['base_fee_cents'] ?? 0);
-$ps = $conn->query("SELECT fee_type, fee_value FROM platform_settings LIMIT 1")->fetch_assoc();
-$platform_fee = calc_fee_cents($ps['fee_type'] ?? 'fixed', (int)($ps['fee_value'] ?? 0), $base);
-
-$admin_fee = 0;
-$ref_admin_id = (int)($race['ref_admin_id'] ?? 0);
-if ($ref_admin_id > 0) {
-  $stmt2 = $conn->prepare("SELECT fee_type, fee_value FROM admin_settings WHERE admin_user_id=? LIMIT 1");
-  $stmt2->bind_param("i", $ref_admin_id);
-  $stmt2->execute();
-  $as = $stmt2->get_result()->fetch_assoc();
-  $stmt2->close();
-  if ($as) $admin_fee = calc_fee_cents($as['fee_type'] ?? 'fixed', (int)($as['fee_value'] ?? 0), $base);
-}
-
-$raw_total  = $base + $platform_fee + $admin_fee;
-$paid_total = round_up_to_50_cents($raw_total);
+// Quota (preview)
+$fees_preview = compute_fees_for_race($conn, $race);
+$paid_total = (int)$fees_preview['fee_total_cents'];
 
 $pageTitle = 'Gara: ' . ($race['title'] ?? '');
 page_header($pageTitle);
@@ -313,7 +400,7 @@ page_header($pageTitle);
   <b>Organizzazione:</b> <?php echo h($race['org_name'] ?? ''); ?><br>
   <b>Evento:</b> <?php echo h($race['event_title'] ?? ''); ?><br>
   <b>Luogo:</b> <?php echo h($race['location'] ?? '-'); ?><br>
-  <b>Data/Ora:</b> <?php echo h($race['start_at'] ?? '-'); ?><br>
+  <b>Data/Ora:</b> <?php echo h(it_datetime($race['start_at'] ?? null)); ?><br>
   <b>Disciplina:</b> <?php echo h($race['discipline'] ?? '-'); ?><br>
   <b>Stato gara:</b> <?php echo h($race['status'] ?? '-'); ?>
 </p>
@@ -367,21 +454,44 @@ page_header($pageTitle);
     <p><b>Iscrizioni chiuse.</b></p>
   <?php else: ?>
 
-    <?php if (!$myReg || ($myReg['status'] ?? '') === 'cancelled'): ?>
+    <?php $st = (string)($myReg['status'] ?? ''); ?>
+
+    <?php if (!$myReg || $st === '' || $st === 'cancelled'): ?>
       <p>Non sei iscritto.</p>
       <form method="post">
         <input type="hidden" name="action" value="register">
         <button type="submit" style="padding:10px 14px;">Iscriviti</button>
       </form>
+
     <?php else: ?>
       <p>
-        Stato: <b><?php echo h($myReg['status'] ?? ''); ?></b>
-        · dal <?php echo h($myReg['created_at'] ?? ''); ?>
+        Stato: <b><?php echo h(it_status($st)); ?></b>
+        <?php if (!empty($myReg['status_reason'])): ?>
+          · <?php echo h(it_reason((string)$myReg['status_reason'])); ?>
+        <?php endif; ?>
+        <?php if (!empty($myReg['payment_status'])): ?>
+          · <?php echo h(it_payment((string)$myReg['payment_status'])); ?>
+        <?php endif; ?>
+        · dal <?php echo h(it_datetime($myReg['created_at'] ?? null)); ?>
       </p>
-      <form method="post" onsubmit="return confirm('Vuoi annullare l’iscrizione?');">
-        <input type="hidden" name="action" value="cancel">
-        <button type="submit" style="padding:10px 14px;">Annulla iscrizione</button>
-      </form>
+
+      <?php if ($st === 'pending'): ?>
+  <p style="margin-top:6px;">
+    La tua iscrizione è stata registrata ma non è ancora definitiva.<br>
+    <small>L’iscrizione sarà visibile nell’elenco pubblico solo dopo la conferma del pagamento.</small>
+  </p>
+<?php elseif ($st === 'blocked'): ?>
+  <p style="margin-top:6px;">Iscrizione bloccata: serve sistemare i requisiti (certificato / tesseramento).</p>
+<?php endif; ?>
+
+
+      <?php if ($st === 'pending' || $st === 'confirmed'): ?>
+        <form method="post" onsubmit="return confirm('Vuoi annullare l’iscrizione?');">
+          <input type="hidden" name="action" value="cancel">
+          <button type="submit" style="padding:10px 14px;">Annulla iscrizione</button>
+        </form>
+      <?php endif; ?>
+
     <?php endif; ?>
 
   <?php endif; ?>

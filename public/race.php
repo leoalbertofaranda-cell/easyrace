@@ -5,6 +5,8 @@ declare(strict_types=1);
 require_once __DIR__ . '/../app/includes/bootstrap.php';
 require_once __DIR__ . '/../app/includes/layout.php';
 require_once __DIR__ . '/../app/includes/categories.php';
+require_once __DIR__ . '/../app/includes/fees.php';
+
 
 require_login();
 
@@ -12,8 +14,6 @@ $u = auth_user();
 $conn = db($config);
 
 // Fee provvisorie (poi le rendiamo configurabili)
-const PLATFORM_FEE_CENTS = 100; // €1,00
-const ADMIN_FEE_CENTS    = 0;   // €0,00
 
 /**
  * Fallback escape HTML
@@ -98,34 +98,104 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // 2) toggle pagamento (con paid_total_cents)
-    if ($reg_id > 0 && in_array($action, ['mark_paid','mark_unpaid'], true)) {
+if ($reg_id > 0 && in_array($action, ['mark_paid','mark_unpaid'], true)) {
 
-      if ($action === 'mark_paid') {
-        $stmt = $conn->prepare("
-          UPDATE registrations
-          SET
-            paid_total_cents = fee_total_cents,
-            payment_status='paid',
-            paid_at=NOW()
-          WHERE id=? AND race_id=? LIMIT 1
-        ");
-      } else {
-        $stmt = $conn->prepare("
-          UPDATE registrations
-          SET
-            paid_total_cents = 0,
-            payment_status='unpaid',
-            paid_at=NULL
-          WHERE id=? AND race_id=? LIMIT 1
-        ");
-      }
+  // blocco minimo: non segnare pagato se cancellato
+  $stmt = $conn->prepare("SELECT status, status_reason FROM registrations WHERE id=? AND race_id=? LIMIT 1");
+  $stmt->bind_param("ii", $reg_id, $race_id);
+  $stmt->execute();
+  $cur = $stmt->get_result()->fetch_assoc();
+  $stmt->close();
 
+  if (!$cur) {
+    $error = "Iscrizione non trovata.";
+  } elseif (($cur['status'] ?? '') === 'cancelled') {
+    $error = "Iscrizione annullata: non puoi modificarne il pagamento.";
+  } else {
+
+    if ($action === 'mark_paid') {
+
+      $stmt = $conn->prepare("
+  UPDATE registrations
+  SET
+    paid_total_cents = fee_total_cents,
+    payment_status = 'paid',
+    paid_at = NOW(),
+    status = IF(status='pending','confirmed', status),
+    confirmed_at = IF(status='pending', NOW(), confirmed_at),
+    status_reason = 'OK'
+  WHERE id=? AND race_id=? LIMIT 1
+");
+
+
+    } else { // mark_unpaid
+
+      $stmt = $conn->prepare("
+        UPDATE registrations
+        SET
+          paid_total_cents = 0,
+          payment_status = 'unpaid',
+          paid_at = NULL,
+          status = IF(status='confirmed' AND status_reason='PAYMENT_REQUIRED','pending', status),
+          confirmed_at = IF(status='confirmed' AND status_reason='PAYMENT_REQUIRED', NULL, confirmed_at)
+        WHERE id=? AND race_id=? LIMIT 1
+      ");
+
+    }
+
+    $stmt->bind_param("ii", $reg_id, $race_id);
+    $stmt->execute();
+    $stmt->close();
+
+    header("Location: race.php?id=".$race_id);
+    exit;
+  }
+}
+
+
+      // blocco minimo: non segnare pagato se cancellato
+      $stmt = $conn->prepare("SELECT status FROM registrations WHERE id=? AND race_id=? LIMIT 1");
       $stmt->bind_param("ii", $reg_id, $race_id);
       $stmt->execute();
+      $cur = $stmt->get_result()->fetch_assoc();
       $stmt->close();
 
-      header("Location: race.php?id=".$race_id);
-      exit;
+      if (!$cur) {
+        $error = "Iscrizione non trovata.";
+      } elseif (($cur['status'] ?? '') === 'cancelled') {
+        $error = "Iscrizione annullata: non puoi modificarne il pagamento.";
+      } else {
+
+        if ($action === 'mark_paid') {
+  $stmt = $conn->prepare("
+    UPDATE registrations
+    SET
+      paid_total_cents = fee_total_cents,
+      payment_status = 'paid',
+      paid_at = NOW(),
+      status = IF(status = 'pending', 'confirmed', status),
+      confirmed_at = IF(status = 'pending', NOW(), confirmed_at)
+    WHERE id = ? AND race_id = ? LIMIT 1
+  ");
+} else {
+  $stmt = $conn->prepare("
+    UPDATE registrations
+    SET
+      paid_total_cents = 0,
+      payment_status = 'unpaid',
+      paid_at = NULL
+    WHERE id = ? AND race_id = ? LIMIT 1
+  ");
+}
+
+
+        $stmt->bind_param("ii", $reg_id, $race_id);
+        $stmt->execute();
+        $stmt->close();
+
+        header("Location: race.php?id=".$race_id);
+        exit;
+      }
     }
 
     // 3) azioni su iscrizione (confirm/pending/cancel) con confirmed_at
@@ -195,15 +265,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       }
     }
 
-    // REGISTER atleta
-    if ($action === 'register') {
-      try {
-        // blocca se gara non open
-        if (($race['status'] ?? '') !== 'open') {
-          header("Location: race.php?id=".$race_id."&err=race_closed");
-          exit;
-        }
-
+        // REGISTER atleta (disattivato qui: si fa nel pubblico)
+if ($action === 'register') {
+  header("Location: race_public.php?id=" . $race_id);
+  exit;
+}
+    
         // evita doppie iscrizioni (se esiste e non è cancelled)
         $stmt = $conn->prepare("SELECT id,status FROM registrations WHERE race_id=? AND user_id=? LIMIT 1");
         $stmt->bind_param("ii", $race_id, $u['id']);
@@ -215,9 +282,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           throw new RuntimeException("Sei già iscritto a questa gara.");
         }
 
-        // ----------------------------------------------------
         // Profilo atleta: fonte unica = athlete_profile
-        // ----------------------------------------------------
         $stmt = $conn->prepare("SELECT birth_date, gender FROM athlete_profile WHERE user_id=? LIMIT 1");
         if (!$stmt) throw new RuntimeException("Errore DB (prepare atleta): ".h($conn->error));
         $stmt->bind_param("i", $u['id']);
@@ -233,9 +298,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           exit;
         }
 
-        // ----------------------------------------------------
         // Determinazione rulebook_season_id (robusta)
-        // ----------------------------------------------------
         $season_id   = (int)($race['rulebook_season_id'] ?? 0);
         $rulebook_id = (int)($race['rulebook_id'] ?? 0);
 
@@ -297,9 +360,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           exit;
         }
 
-        // ----------------------------------------------------
         // Calcolo categoria (code) + recupero id/label
-        // ----------------------------------------------------
         $cat_code = get_category_for_athlete_by_season($conn, $season_id, $birth_date, $gender);
         if (!$cat_code) {
           header("Location: race.php?id=".$race_id."&err=category_missing");
@@ -334,9 +395,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $cat_id    = (int)($catRow['id'] ?? 0);
         $cat_label = (string)($catRow['name'] ?? $cat_code);
 
-        // ----------------------------------------------------
         // Quote snapshot
-        // ----------------------------------------------------
         $base_fee_cents = (int)($race['base_fee_cents'] ?? 0);
 
         $platform_fee_cents = (int)PLATFORM_FEE_CENTS;
@@ -394,12 +453,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: race.php?id=".$race_id);
         exit;
 
-      } catch (Throwable $e) {
-        $error = "Non riesco a completare l’iscrizione: " . $e->getMessage();
-      }
+     
     }
-  }
-}
+
 
 /**
  * ======================================================
@@ -431,6 +487,7 @@ if (can_manage()) {
     SELECT
       r.id,
       r.status,
+      r.status_reason,
       r.created_at,
       r.confirmed_at,
       r.payment_status,
@@ -546,6 +603,7 @@ page_header($pageTitle);
           <th>Nome</th>
           <th>Email</th>
           <th>Stato</th>
+          <th>Motivo</th>
           <th>Categoria</th>
           <th>Quota</th>
           <th>Pagato</th>
@@ -560,7 +618,7 @@ page_header($pageTitle);
             <td><?php echo h($r['full_name'] ?? ''); ?></td>
             <td><?php echo h($r['email'] ?? ''); ?></td>
             <td><?php echo h($r['status'] ?? ''); ?></td>
-
+            <td><?php echo h($r['status_reason'] ?? '-'); ?></td>
             <td>
               <?php
                 $cc = (string)($r['category_code'] ?? '');
