@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../app/includes/bootstrap.php';
 require_once __DIR__ . '/../app/includes/layout.php';
 
+
 require_login();
 
 $u = auth_user();
@@ -24,4 +25,5 @@ page_header('Dashboard');
 <?php endif; ?>
 
 <?php
+
 page_footer();

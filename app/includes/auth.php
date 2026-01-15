@@ -75,8 +75,19 @@ function require_roles(array $roles): void {
 }
 
 function require_manage(): void {
-  require_roles(['superuser','admin','organizer']);
+  require_login();
+
+  // NON usare current_role() qui
+  $u = auth_user();
+  $role = (string)($u['role'] ?? '');
+
+  if (!in_array($role, ['superuser','admin','organizer'], true)) {
+    header("HTTP/1.1 403 Forbidden");
+    exit("Accesso negato.");
+  }
 }
+
+
 
 function can_manage(): bool {
   $r = auth_role();
@@ -85,4 +96,14 @@ function can_manage(): bool {
 
 function is_athlete(): bool {
   return auth_role() === 'athlete';
+}
+
+function require_superuser(): void {
+  require_login();
+  $u = auth_user();
+  $role = (string)($u['role'] ?? '');
+  if ($role !== 'superuser') {
+    header("HTTP/1.1 403 Forbidden");
+    exit("Accesso negato");
+  }
 }

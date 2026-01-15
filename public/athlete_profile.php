@@ -120,6 +120,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $form['cap']  = trim((string)($_POST['cap'] ?? ''));
   $form['city'] = trim((string)($_POST['city'] ?? ''));
   $form['tax_code'] = strtoupper(trim((string)($_POST['tax_code'] ?? '')));
+  $form['tax_code'] = strtoupper(trim((string)($_POST['tax_code'] ?? '')));
+  $form['tax_code'] = preg_replace('/\s+/', '', $form['tax_code']);
+  
+  // ⚠️ warning soft codice fiscale
+$taxWarn = '';
+if ($form['tax_code'] !== '' && !validate_tax_code($form['tax_code'])) {
+  $taxWarn = "Attenzione: il Codice Fiscale inserito sembra non valido (controlla eventuali errori di battitura).";
+}
+  
   $form['phone_mobile'] = trim((string)($_POST['phone_mobile'] ?? ''));
   $form['phone_landline'] = trim((string)($_POST['phone_landline'] ?? ''));
 
@@ -275,48 +284,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         consent_marketing = VALUES(consent_marketing)
     ";
 
-    $stmt = $conn->prepare($sql);
-    if (!$stmt) {
-      $error = "Errore DB (prepare): " . h($conn->error);
+   $stmt = $conn->prepare($sql);
+if (!$stmt) {
+  $error = "Errore DB (prepare): " . h($conn->error);
+} else {
+  // 1 int + 20 stringhe + 3 int = 24 parametri
+  $types = "i" . str_repeat("s", 20) . str_repeat("i", 3);
+
+  $stmt->bind_param(
+    $types,
+    $user_id,
+    $form['first_name'],
+    $form['last_name'],
+    $form['club_name'],
+    $form['birth_date'],
+    $form['gender'],
+    $form['shirt_size'],
+    $form['pants_size'],
+    $form['shoe_size'],
+    $form['address_residence'],
+    $form['cap'],
+    $form['city'],
+    $form['tax_code'],
+    $form['phone_mobile'],
+    $form['phone_landline'],
+    $form['primary_membership_federation_code'],
+    $form['primary_membership_number'],
+    $form['medical_cert_date'],
+    $form['medical_cert_type'],
+    $medical_valid_until,
+    $medical_cert_file_path,
+    $form['consent_privacy'],
+    $form['consent_communications'],
+    $form['consent_marketing']
+  );
+
+  if (!$stmt->execute()) {
+    if ($stmt->errno === 1062) {
+      $error = "Codice Fiscale già presente nel sistema. Controlla di non aver inserito il CF di un altro atleta.";
     } else {
-      // 1 int + 20 stringhe + 3 int = 24 parametri
-      $types = "i" . str_repeat("s", 20) . str_repeat("i", 3);
-
-      $stmt->bind_param(
-        $types,
-        $user_id,
-        $form['first_name'],
-        $form['last_name'],
-        $form['club_name'],
-        $form['birth_date'],
-        $form['gender'],
-        $form['shirt_size'],
-        $form['pants_size'],
-        $form['shoe_size'],
-        $form['address_residence'],
-        $form['cap'],
-        $form['city'],
-        $form['tax_code'],
-        $form['phone_mobile'],
-        $form['phone_landline'],
-        $form['primary_membership_federation_code'],
-        $form['primary_membership_number'],
-        $form['medical_cert_date'],
-        $form['medical_cert_type'],
-        $medical_valid_until,
-        $medical_cert_file_path,
-        $form['consent_privacy'],
-        $form['consent_communications'],
-        $form['consent_marketing']
-      );
-
-      if (!$stmt->execute()) {
-        $error = "Errore DB (execute): " . h($stmt->error);
-      }
-      $stmt->close();
+      $error = "Errore DB (execute): " . h($stmt->error);
     }
   }
 
+  $stmt->close();
+}
+  }
   /**
    * Solo se DB ok: aggiorna sessione e ricarica dati
    */

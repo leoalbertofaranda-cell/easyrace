@@ -3,6 +3,10 @@ require_once __DIR__ . '/../app/includes/bootstrap.php';
 require_once __DIR__ . '/../app/includes/layout.php';
 
 require_login();
+
+/**
+ * QUI è il punto giusto (subito dopo require_login)
+ */
 if (current_role() !== 'superuser') {
   header("HTTP/1.1 403 Forbidden");
   exit("Accesso negato.");
@@ -11,6 +15,7 @@ if (current_role() !== 'superuser') {
 $conn = db($config);
 $error = '';
 $success = '';
+
 
 // toggle attivo
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'toggle') {

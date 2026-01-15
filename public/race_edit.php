@@ -6,8 +6,13 @@ require_manage();
 $u = auth_user();
 $conn = db($config);
 
-$event_id = (int)($_GET['event_id'] ?? 0);
-if ($event_id <= 0) { header("Location: events.php"); exit; }
+/**
+ * ======================================================
+ * ID gara (edit)
+ * ======================================================
+ */
+$race_id = (int)($_GET['id'] ?? 0);
+if ($race_id <= 0) { header("Location: events.php"); exit; }
 
 /**
  * ======================================================
@@ -35,6 +40,7 @@ if ($res && ($row = $res->fetch_assoc())) {
   $ps['fee_value_bp'] = isset($row['fee_value_bp']) && $row['fee_value_bp'] !== null ? (int)$row['fee_value_bp'] : null;
   $ps['round_to_cents'] = (int)$row['round_to_cents'];
 }
+
 // Fee procacciatori (Admin) -> mappa [admin_id => settings]
 $admin_fee_map = [];
 $res = $conn->query("SELECT admin_user_id, fee_type, fee_value_cents, fee_value_bp, round_to_cents FROM admin_settings");
@@ -50,6 +56,11 @@ if ($res) {
   }
 }
 
+// Per la preview JS: per ora consideriamo admin fee fixed in centesimi (fee_value_cents)
+$admin_fee_map_cents = [];
+foreach ($admin_fee_map as $aid => $s) {
+  $admin_fee_map_cents[(int)$aid] = (int)($s['fee_value_cents'] ?? 0);
+}
 
 /**
  * Calcolo fee piattaforma in centesimi (fixed o percent)
@@ -77,32 +88,17 @@ function round_up_to(int $cents, int $step): int {
   return (int)(ceil($cents / $step) * $step);
 }
 
-// verifica evento accessibile
-$stmt = $conn->prepare("
-  SELECT e.id, e.organization_id
-  FROM events e
-  JOIN organization_users ou ON ou.organization_id = e.organization_id
-  WHERE e.id=? AND ou.user_id=?
-  LIMIT 1
-");
-$stmt->bind_param("ii", $event_id, $u['id']);
-$stmt->execute();
-$ev = $stmt->get_result()->fetch_assoc();
-$stmt->close();
-if (!$ev) { header("Location: events.php"); exit; }
-
-// conversione importo (es. "13,50" -> 1350)
+/**
+ * conversione importo (es. "13,50" -> 1350)
+ */
 function money_to_cents(string $s): int {
   $s = trim($s);
   if ($s === '') return 0;
   $s = str_replace(['€', ' '], '', $s);
   $s = str_replace(',', '.', $s);
-
-  // lascia solo numeri e punto
   $s = preg_replace('/[^0-9.]/', '', $s);
   if ($s === '' || $s === '.') return 0;
 
-  // evita "12.3.4"
   $parts = explode('.', $s, 3);
   if (count($parts) > 2) {
     $s = $parts[0] . '.' . $parts[1];
@@ -113,18 +109,70 @@ function money_to_cents(string $s): int {
   return (int) round($val * 100);
 }
 
-$error = '';
+/**
+ * cents -> "15,00"
+ */
+function cents_to_money_it(int $cents): string {
+  $cents = max(0, (int)$cents);
+  $s = number_format($cents / 100, 2, ',', '');
+  return $s;
+}
 
-// valori default (per ripopolare form in caso errore)
+/**
+ * DB datetime "YYYY-mm-dd HH:ii:ss" -> input datetime-local "YYYY-mm-ddTHH:ii"
+ */
+function dbdt_to_input(?string $dt): string {
+  $dt = trim((string)$dt);
+  if ($dt === '') return '';
+  // già formato input?
+  if (strpos($dt, 'T') !== false) {
+    // taglia eventuali secondi
+    return substr($dt, 0, 16);
+  }
+  // formato DB con spazio
+  $dt = str_replace(' ', 'T', $dt);
+  return substr($dt, 0, 16);
+}
+
+/**
+ * ======================================================
+ * Carico gara + controllo accesso (manage su organization)
+ * ======================================================
+ */
+$stmt = $conn->prepare("
+  SELECT r.*, e.organization_id
+  FROM races r
+  JOIN events e ON e.id = r.event_id
+  JOIN organization_users ou ON ou.organization_id = e.organization_id
+  WHERE r.id=? AND ou.user_id=?
+  LIMIT 1
+");
+$stmt->bind_param("ii", $race_id, $u['id']);
+$stmt->execute();
+$race = $stmt->get_result()->fetch_assoc();
+$stmt->close();
+
+if (!$race) { header("Location: events.php"); exit; }
+
+$event_id = (int)$race['event_id'];
+
+/**
+ * ======================================================
+ * Form defaults + preload da DB
+ * ======================================================
+ */
+$error = '';
+$ok = '';
+
 $form = [
-  'title' => '',
-  'location' => '',
-  'start_at' => '',
-  'discipline' => 'other',
-  'status' => 'draft',
-  'base_fee' => '',
-  'organizer_iban' => '',
-  'ref_admin_id' => '0',
+  'title' => (string)($race['title'] ?? ''),
+  'location' => (string)($race['location'] ?? ''),
+  'start_at' => dbdt_to_input($race['start_at'] ?? ''),
+  'discipline' => (string)($race['discipline'] ?? 'other'),
+  'status' => (string)($race['status'] ?? 'draft'),
+  'base_fee' => cents_to_money_it((int)($race['base_fee_cents'] ?? 0)),
+  'organizer_iban' => (string)($race['organizer_iban'] ?? ''),
+  'ref_admin_id' => (string)((int)($race['ref_admin_id'] ?? 0)),
 ];
 
 // lista procacciatori (opzionale): prendo utenti role=admin
@@ -132,6 +180,11 @@ $admins = [];
 $res = $conn->query("SELECT id, full_name, email FROM users WHERE role='admin' ORDER BY full_name ASC");
 if ($res) $admins = $res->fetch_all(MYSQLI_ASSOC);
 
+/**
+ * ======================================================
+ * POST = UPDATE
+ * ======================================================
+ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $form['title'] = trim((string)($_POST['title'] ?? ''));
   $form['location'] = trim((string)($_POST['location'] ?? ''));
@@ -144,7 +197,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
   $title = $form['title'];
   $location = $form['location'];
-  $start_at = $form['start_at'] !== '' ? $form['start_at'] : null;
+  $start_at = $form['start_at'] !== '' ? $form['start_at'] : null; // input datetime-local -> ok per DB se colonna DATETIME
   $discipline = $form['discipline'];
   $status = $form['status'];
 
@@ -152,84 +205,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $organizer_iban = $form['organizer_iban'] !== '' ? $form['organizer_iban'] : null;
 
   $ref_admin_id = (int)$form['ref_admin_id'];
-  if ($ref_admin_id <= 0) $ref_admin_id = null;
+  if ($ref_admin_id <= 0) $ref_admin_id = 0; // useremo NULLIF
 
   if ($title === '') {
     $error = "Titolo obbligatorio.";
   } else {
+    // Update semplice e robusto
     $stmt = $conn->prepare("
-      INSERT INTO races
-        (event_id, title, location, start_at, discipline, status, base_fee_cents, organizer_iban, ref_admin_id)
-      VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      UPDATE races
+      SET
+        title=?,
+        location=?,
+        start_at=?,
+        discipline=?,
+        status=?,
+        base_fee_cents=?,
+        organizer_iban=?,
+        ref_admin_id=NULLIF(?,0)
+      WHERE id=?
+      LIMIT 1
     ");
-
-    // bind con null: usiamo variabili dedicate
-    $ref_admin_id_bind = $ref_admin_id;      // può essere null
-    $organizer_iban_bind = $organizer_iban;  // può essere null
-
     $stmt->bind_param(
-      "isssssssi",
-      $event_id,
+      "sssssissi",
       $title,
       $location,
       $start_at,
       $discipline,
       $status,
       $base_fee_cents,
-      $organizer_iban_bind,
-      $ref_admin_id_bind
+      $organizer_iban,
+      $ref_admin_id,
+      $race_id
     );
-
-    // ATTENZIONE: bind_param richiede tipi coerenti.
-    // Siccome qui abbiamo int + stringhe + possibili null, facciamo un bind più robusto:
-    $stmt->close();
-
-    // bind robusto (senza impazzire): preparo una query senza NULL nei type
-    $stmt = $conn->prepare("
-      INSERT INTO races
-        (event_id, title, location, start_at, discipline, status, base_fee_cents, organizer_iban, ref_admin_id)
-      VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ");
-    // tipologia: i s s s s s i s i  (ref_admin_id se null -> 0 e lo settiamo NULL in query)
-    $ref_admin_id_int = $ref_admin_id ?? 0;
-
-    // se ref_admin_id è null, passiamo 0 e poi lo convertiamo a NULL con NULLIF
-    $stmt->close();
-    $stmt = $conn->prepare("
-      INSERT INTO races
-        (event_id, title, location, start_at, discipline, status, base_fee_cents, organizer_iban, ref_admin_id)
-      VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?,0))
-    ");
-    $stmt->bind_param(
-      "isssssisi",
-      $event_id,
-      $title,
-      $location,
-      $start_at,
-      $discipline,
-      $status,
-      $base_fee_cents,
-      $organizer_iban_bind,
-      $ref_admin_id_int
-    );
-
     $stmt->execute();
     $stmt->close();
 
-    header("Location: event_detail.php?id=".$event_id);
+    // ricarico per sicurezza (così vedi subito aggiornato)
+    header("Location: race_edit.php?id=".$race_id);
     exit;
   }
 }
 ?>
 <!doctype html>
 <html lang="it">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>EasyRace - Nuova gara</title></head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EasyRace - Modifica gara</title>
+</head>
+
 <body style="font-family:system-ui;max-width:640px;margin:40px auto;padding:0 16px;">
-  <h1>Nuova gara</h1>
+
+  <h1>Modifica gara</h1>
   <p><a href="event_detail.php?id=<?php echo (int)$event_id; ?>">← Torna all’evento</a></p>
 
   <?php if ($error): ?>
@@ -239,6 +266,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <?php endif; ?>
 
   <form method="post">
+
     <label>Titolo *</label><br>
     <input name="title" value="<?php echo h($form['title']); ?>" style="width:100%;padding:10px;margin:6px 0 12px;" required>
 
@@ -255,68 +283,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <option value="other" <?php echo ($form['discipline']==='other'?'selected':''); ?>>other</option>
     </select>
 
-    <?php
-// --- Fee (in centesimi) disponibili lato server ---
-// TODO: qui devi valorizzarle leggendo dal DB (platform_settings + admin_settings)
-// Per ora metto fallback sicuro:
-$platform_fee_cents = (int)($platform_fee_cents ?? 0);
+    <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
 
-// Mappa fee procacciatori: [admin_id => fee_cents]
-// Se non ce l'hai ancora, resta vuota (fee=0)
-$admin_fee_map_cents = $admin_fee_map_cents ?? [];
-?>
+      <div style="flex:1; min-width:240px;">
+        <label for="base_fee">Quota base (organizzatore)</label><br>
+        <input
+          id="base_fee"
+          name="base_fee"
+          value="<?php echo h($form['base_fee'] ?? ''); ?>"
+          placeholder="es. 13,50"
+          style="width:100%;padding:10px;margin:6px 0 12px;"
+          inputmode="decimal"
+          autocomplete="off"
+        >
+        <div style="font-size:12px;color:#666;margin-top:-6px;">
+          Importo che l’organizzatore intende incassare per ogni iscritto.
+        </div>
+      </div>
 
-<div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+      <div style="flex:1; min-width:240px;">
+        <label for="total_fee_preview">Quota online (finale atleta)</label><br>
+        <input
+          id="total_fee_preview"
+          value=""
+          readonly
+          style="width:100%;padding:10px;margin:6px 0 12px;background:#f6f6f6;"
+        >
+        <div style="font-size:12px;color:#666;margin-top:-6px;">
+          Include commissioni di servizio EasyRace
+          <span style="white-space:nowrap;">(ed eventuale procacciatore)</span>.
+        </div>
+        <div id="fee_breakdown" style="font-size:12px;color:#666;margin-top:4px;"></div>
+      </div>
 
-  <div style="flex:1; min-width:240px;">
-    <label for="base_fee">
-      Quota base (organizzatore)
-    </label><br>
-    <input
-      id="base_fee"
-      name="base_fee"
-      value="<?php echo h($form['base_fee'] ?? ''); ?>"
-      placeholder="es. 13,50"
-      style="width:100%;padding:10px;margin:6px 0 12px;"
-      inputmode="decimal"
-      autocomplete="off"
-    >
-    <div style="font-size:12px;color:#666;margin-top:-6px;">
-      Importo che l’organizzatore intende incassare per ogni iscritto.
     </div>
-  </div>
 
-  <div style="flex:1; min-width:240px;">
-    <label for="total_fee_preview">
-      Quota online (finale atleta)
-    </label><br>
-    <input
-      id="total_fee_preview"
-      value=""
-      readonly
-      style="width:100%;padding:10px;margin:6px 0 12px;background:#f6f6f6;"
-    >
-    <div style="font-size:12px;color:#666;margin-top:-6px;">
-      Include commissioni di servizio EasyRace
-      <span style="white-space:nowrap;">(ed eventuale procacciatore)</span>.
-    </div>
-    <div
-      id="fee_breakdown"
-      style="font-size:12px;color:#666;margin-top:4px;"
-    ></div>
-  </div>
+    <label>IBAN organizzatore (per questa gara)</label><br>
+    <input name="organizer_iban" value="<?php echo h($form['organizer_iban']); ?>" placeholder="es. IT60X0542811101000000123456" style="width:100%;padding:10px;margin:6px 0 12px;">
 
-</div>
+    <label>Procacciatore (opzionale)</label><br>
+    <select name="ref_admin_id" id="ref_admin_id" style="width:100%;padding:10px;margin:6px 0 12px;">
+      <option value="0" <?php echo ($form['ref_admin_id']==='0'?'selected':''); ?>>Nessuno</option>
+      <?php foreach ($admins as $a): ?>
+        <option value="<?php echo (int)$a['id']; ?>" <?php echo ((string)$a['id']===$form['ref_admin_id']?'selected':''); ?>>
+          <?php echo h(($a['full_name'] ?? 'Admin').' · '.($a['email'] ?? '')); ?>
+        </option>
+      <?php endforeach; ?>
+    </select>
 
+    <label>Stato</label><br>
+    <select name="status" style="width:100%;padding:10px;margin:6px 0 12px;">
+      <option value="draft" <?php echo ($form['status']==='draft'?'selected':''); ?>>draft</option>
+      <option value="open" <?php echo ($form['status']==='open'?'selected':''); ?>>open</option>
+      <option value="closed" <?php echo ($form['status']==='closed'?'selected':''); ?>>closed</option>
+      <option value="archived" <?php echo ($form['status']==='archived'?'selected':''); ?>>archived</option>
+    </select>
 
+    <button type="submit" style="padding:10px 14px;">Salva modifiche</button>
+
+  </form>
 
 <script>
 (function(){
-  // --- Helpers ---
   function parseEuroToCents(str){
     str = (str || '').trim();
     if (!str) return 0;
-    // accetta "13,50" o "13.50" o "13" e anche "1.234,50"
     str = str.replace(/\./g, '').replace(',', '.');
     var n = Number(str);
     if (!isFinite(n) || n < 0) return 0;
@@ -334,28 +365,22 @@ $admin_fee_map_cents = $admin_fee_map_cents ?? [];
     return Math.ceil(cents / step) * step;
   }
 
-  // --- Settings da PHP (platform) ---
   var platformSettings = <?php echo json_encode($ps, JSON_UNESCAPED_UNICODE); ?>;
-
-  // --- Procacciatori (fixed per ora): { "12": 100, "15": 200, ... } ---
   var adminFeeMapCents = <?php echo json_encode($admin_fee_map_cents, JSON_UNESCAPED_UNICODE); ?>;
 
-  // Elementi DOM
-  var baseEl   = document.getElementById('base_fee');
-  var totalEl  = document.getElementById('total_fee_preview');
+  var baseEl = document.getElementById('base_fee');
+  var totalEl = document.getElementById('total_fee_preview');
   var breakdownEl = document.getElementById('fee_breakdown');
 
-  // Procacciatore select: aggancio robusto (id o vari name)
-  var procEl =
-    document.getElementById('procacciatore') ||
-    document.querySelector('select[name="procacciatore"], select[name="admin_id"], select[name="procacciatore_id"]');
+  // qui aggancio la select vera (ref_admin_id)
+  var procEl = document.getElementById('ref_admin_id') || document.querySelector('select[name="ref_admin_id"]');
 
   function calcPlatformFeeCents(baseCents){
     if (platformSettings.fee_type === 'percent') {
-      var bp = parseInt(platformSettings.fee_value_bp || 0, 10) || 0; // basis points
+      var bp = parseInt(platformSettings.fee_value_bp || 0, 10) || 0;
       return Math.round(baseCents * (bp / 10000));
     }
-    return parseInt(platformSettings.fee_value_cents || 0, 10) || 0; // fixed
+    return parseInt(platformSettings.fee_value_cents || 0, 10) || 0;
   }
 
   function getAdminFeeCents(){
@@ -368,24 +393,21 @@ $admin_fee_map_cents = $admin_fee_map_cents ?? [];
   function recalc(){
     var baseCents = parseEuroToCents(baseEl ? baseEl.value : '');
 
-    // Se la quota base è zero o vuota, non mostrare nulla
-if (!baseCents) {
-  totalEl.value = '';
-  breakdownEl.textContent = '';
-  return;
-}
+    // Se base è zero/vuota, non mostrare nulla
+    if (!baseCents) {
+      totalEl.value = '';
+      breakdownEl.textContent = '';
+      return;
+    }
 
     var platformCents = calcPlatformFeeCents(baseCents);
     var adminCents = getAdminFeeCents();
 
     var totalCents = baseCents + platformCents + adminCents;
-
-    // arrotondamento (usa quello della piattaforma)
     totalCents = roundUpTo(totalCents, platformSettings.round_to_cents);
 
     totalEl.value = totalCents ? (centsToEuro(totalCents) + ' €') : '';
 
-    // Dettaglio
     var parts = [];
     if (baseCents) parts.push('Base ' + centsToEuro(baseCents) + '€');
     if (platformCents) parts.push('EasyRace ' + centsToEuro(platformCents) + '€');
@@ -401,34 +423,9 @@ if (!baseCents) {
     procEl.addEventListener('change', recalc);
   }
 
-  // init
   recalc();
 })();
 </script>
 
-
-    <label>IBAN organizzatore (per questa gara)</label><br>
-    <input name="organizer_iban" value="<?php echo h($form['organizer_iban']); ?>" placeholder="es. IT60X0542811101000000123456" style="width:100%;padding:10px;margin:6px 0 12px;">
-
-    <label>Procacciatore (opzionale)</label><br>
-    <select name="ref_admin_id" style="width:100%;padding:10px;margin:6px 0 12px;">
-      <option value="0" <?php echo ($form['ref_admin_id']==='0'?'selected':''); ?>>Nessuno</option>
-      <?php foreach ($admins as $a): ?>
-        <option value="<?php echo (int)$a['id']; ?>" <?php echo ((string)$a['id']===$form['ref_admin_id']?'selected':''); ?>>
-          <?php echo h(($a['full_name'] ?? 'Admin').' · '.($a['email'] ?? '')); ?>
-        </option>
-      <?php endforeach; ?>
-    </select>
-
-    <label>Stato</label><br>
-    <select name="status" style="width:100%;padding:10px;margin:6px 0 12px;">
-      <option value="draft" <?php echo ($form['status']==='draft'?'selected':''); ?>>draft</option>
-      <option value="open" <?php echo ($form['status']==='open'?'selected':''); ?>>open</option>
-      <option value="closed" <?php echo ($form['status']==='closed'?'selected':''); ?>>closed</option>
-      <option value="archived" <?php echo ($form['status']==='archived'?'selected':''); ?>>archived</option>
-    </select>
-
-    <button type="submit" style="padding:10px 14px;">Crea gara</button>
-  </form>
 </body>
 </html>

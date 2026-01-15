@@ -34,25 +34,32 @@ function page_header(string $title = 'EasyRace'): void {
   $items = [];
 
   if ($role) {
-    $items[] = ['dashboard.php', 'Dashboard'];
 
-    if (in_array($role, ['superuser','admin','organizer'], true)) {
+    // ATHLETE: menu “pulito”
+    if ($role === 'athlete') {
+      $items[] = ['my_registrations.php', 'Le mie iscrizioni'];
+      $items[] = ['athlete_profile.php', 'Profilo atleta'];
+      $items[] = ['logout.php', 'Esci'];
+
+    // GESTIONE: admin / organizer / superuser
+    } elseif (in_array($role, ['superuser','admin','organizer'], true)) {
+      $items[] = ['dashboard.php', 'Dashboard'];
       $items[] = ['events.php', 'Eventi (gestione)'];
       $items[] = ['organizations.php', 'Organizzazioni'];
       $items[] = ['event_new.php', '+ Evento'];
       $items[] = ['organization_new.php', '+ Organizzazione'];
       $items[] = ['race_new.php', '+ Gara'];
+
+      if ($role === 'superuser') {
+        $items[] = ['su_rulebooks.php', 'Regolamenti'];
+      }
+
+      $items[] = ['logout.php', 'Esci'];
+
+    // fallback (se un giorno aggiungi ruoli)
+    } else {
+      $items[] = ['logout.php', 'Esci'];
     }
-
-if ($role === 'superuser') {
-  $items[] = ['su_rulebooks.php', 'Regolamenti'];
-}
-
-
-    if ($role === 'athlete') {
-      $items[] = ['my_registrations.php', 'Le mie iscrizioni'];
-    }
-    $items[] = ['logout.php', 'Esci'];
   }
 
   // OUTPUT HTML (DOPO)

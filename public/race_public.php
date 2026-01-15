@@ -76,7 +76,6 @@ function compute_fees_for_race(mysqli $conn, array $race): array {
   $ref_admin_id = (int)($race['ref_admin_id'] ?? 0);
   if ($ref_admin_id > 0) {
     $admin_fee_settings = get_admin_settings($conn, $ref_admin_id);
-    // se admin_settings non ha round_to_cents (ma lo ha), fallback coerente
     if (empty($admin_fee_settings['round_to_cents'])) {
       $admin_fee_settings['round_to_cents'] = (int)($platform['round_to_cents'] ?? 50);
     }
@@ -88,20 +87,16 @@ function compute_fees_for_race(mysqli $conn, array $race): array {
   $organizer_net = $fees['race_fee_cents'];
 
   return [
-    // campi "storici" già presenti nel tuo codice
     'base_fee_cents'       => $fees['race_fee_cents'],
     'platform_fee_cents'   => $fees['platform_fee_cents'],
     'admin_fee_cents'      => $fees['admin_fee_cents'],
 
-    // nuovi campi (sinonimi più chiari)
     'fee_race_cents'       => $fees['race_fee_cents'],
     'fee_platform_cents'   => $fees['platform_fee_cents'],
     'fee_admin_cents'      => $fees['admin_fee_cents'],
 
-    // totale
     'fee_total_cents'      => $fees['total_cents'],
 
-    // per compatibilità con il tuo schema precedente (se esistono queste colonne)
     'rounding_delta_cents' => 0,
     'organizer_net_cents'  => $organizer_net,
   ];
@@ -221,13 +216,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
           throw new RuntimeException("Profilo atleta incompleto.");
         }
 
-        // 3) Categoria (per ora: salvo code + label = code)
+        // 3) Categoria (salvo code + label)
         $cat_code = get_category_for_athlete_by_season($conn, $season_id, $birth_date, $gender);
         if (!$cat_code) {
           throw new RuntimeException("Categoria non trovata.");
         }
         $cat_code_db  = (string)$cat_code;
-        $cat_label_db = (string)$cat_code;
+        $cat_label_db = (string)$cat_code; // per ora uguale (poi lo miglioriamo con label reale)
 
         // 4) Fee reali
         $fees = compute_fees_for_race($conn, $race);
@@ -238,25 +233,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
         $rounding_delta_cents_db = (int)($fees['rounding_delta_cents'] ?? 0);
         $fee_total_cents_db      = (int)$fees['fee_total_cents'];
         $organizer_net_cents_db  = (int)($fees['organizer_net_cents'] ?? $base_fee_cents_db);
-        $paid_total_cents_db     = $fee_total_cents_db; // per ora uguale al totale
 
         // nuovi campi (sinonimi)
         $fee_race_cents_db       = (int)$fees['fee_race_cents'];
         $fee_platform_cents_db   = (int)$fees['fee_platform_cents'];
         $fee_admin_cents_db      = (int)$fees['fee_admin_cents'];
 
-        // 5) Stato
-        if ($fee_total_cents_db > 0) {
-          $status_db         = 'pending';
-          $status_reason_db  = 'PAYMENT_REQUIRED';
-          $payment_status_db = 'unpaid';
-          $confirmed_at_db   = null;
-        } else {
-          $status_db         = 'confirmed';
-          $status_reason_db  = 'OK';
-          $payment_status_db = 'paid';
-          $confirmed_at_db   = date('Y-m-d H:i:s');
-        }
+        // ======================================================
+        // STEP 3 (SENZA STRIPE): l'iscrizione parte SEMPRE pending + unpaid
+        // ======================================================
+        $status_db         = 'pending';
+        $status_reason_db  = 'PAYMENT_REQUIRED';
+        $payment_status_db = 'unpaid';
+        $confirmed_at_db   = null;
+
+        // Pagamento sempre a zero in fase di iscrizione
+        $paid_total_cents_db = 0;
 
         // 6) UPSERT
         $stmt = $conn->prepare("
@@ -299,7 +291,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
           throw new RuntimeException("Errore DB (prepare): " . h($conn->error));
         }
 
-        // 18 placeholder => 18 tipi
+        // tipi: ii + ssss + 10i + ss  = 18 parametri
         $stmt->bind_param(
           "iissssiiiiiiiiiiss",
           $race_id,
@@ -338,34 +330,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
     }
 
     // -------------------------
-    // CANCEL
-    // -------------------------
-    if ($action === 'cancel') {
-      try {
-        $status = 'cancelled';
-        $stmt = $conn->prepare("
-          UPDATE registrations
-          SET status = ?
-          WHERE race_id = ? AND user_id = ?
-          LIMIT 1
-        ");
-        $stmt->bind_param("sii", $status, $race_id, $u['id']);
-        $stmt->execute();
-        $stmt->close();
+// CANCEL
+// -------------------------
+if ($action === 'cancel') {
+  try {
+    // Step 3: annullamento deve anche resettare pagamento/confirmed
+    $stmt = $conn->prepare("
+      UPDATE registrations
+      SET
+        status = 'cancelled',
+        status_reason = 'CANCELLED_BY_USER',
+        payment_status = 'unpaid',
+        confirmed_at = NULL,
+        paid_total_cents = 0,
+        paid_at = NULL
+      WHERE race_id = ? AND user_id = ?
+      LIMIT 1
+    ");
+    $stmt->bind_param("ii", $race_id, $u['id']);
+    $stmt->execute();
+    $stmt->close();
 
-        header("Location: race_public.php?id=" . $race_id);
-        exit;
+    header("Location: race_public.php?id=" . $race_id);
+    exit;
 
-      } catch (Throwable $e) {
-        $error = "Annullamento non completato: " . $e->getMessage();
-      }
-    }
+  } catch (Throwable $e) {
+    $error = "Annullamento non completato: " . $e->getMessage();
+  }
+}
 
   }
 }
 
 // ======================================================
-// Iscritti pubblici: solo confermati
+// Iscritti pubblici: solo confermati + pagati
 // ======================================================
 $publicRegs = [];
 $stmt = $conn->prepare("
@@ -476,14 +474,13 @@ page_header($pageTitle);
       </p>
 
       <?php if ($st === 'pending'): ?>
-  <p style="margin-top:6px;">
-    La tua iscrizione è stata registrata ma non è ancora definitiva.<br>
-    <small>L’iscrizione sarà visibile nell’elenco pubblico solo dopo la conferma del pagamento.</small>
-  </p>
-<?php elseif ($st === 'blocked'): ?>
-  <p style="margin-top:6px;">Iscrizione bloccata: serve sistemare i requisiti (certificato / tesseramento).</p>
-<?php endif; ?>
-
+        <p style="margin-top:6px;">
+          La tua iscrizione è stata registrata ma non è ancora definitiva.<br>
+          <small>L’iscrizione sarà visibile nell’elenco pubblico solo dopo la conferma del pagamento.</small>
+        </p>
+      <?php elseif ($st === 'blocked'): ?>
+        <p style="margin-top:6px;">Iscrizione bloccata: serve sistemare i requisiti (certificato / tesseramento).</p>
+      <?php endif; ?>
 
       <?php if ($st === 'pending' || $st === 'confirmed'): ?>
         <form method="post" onsubmit="return confirm('Vuoi annullare l’iscrizione?');">
