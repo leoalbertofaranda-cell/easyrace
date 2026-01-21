@@ -54,6 +54,13 @@ page_header($pageTitle);
   <p><?php echo nl2br(h($event['description'])); ?></p>
 <?php endif; ?>
 
+<p>
+  <a href="export_event_report.php?event_id=<?php echo (int)$event['id']; ?>">
+    Scarica CSV rendicontazione EVENTO (solo pagati)
+  </a>
+</p>
+
+
 <h2 style="margin-top:18px;">Gare / Tappe</h2>
 
 <?php if (!$races): ?>

@@ -29,17 +29,23 @@ function it_reason(string $r): string {
     'MEMBERSHIP_NOT_ALLOWED' => 'Tesseramento non ammesso',
     'CERT_MISSING'           => 'Certificato mancante',
     'CERT_EXPIRED'           => 'Certificato scaduto',
+    'PROFILE_INCOMPLETE'     => 'Profilo atleta incompleto',
+    'CANCELLED_BY_USER'      => 'Annullata da te',
     default                  => $r,
   };
 }
 
-function it_payment(string $p): string {
-  return match ($p) {
-    'paid'   => 'Pagato',
-    'unpaid' => 'Non pagato',
-    default  => $p,
+function reason_hint(string $r): string {
+  return match ($r) {
+    'PAYMENT_REQUIRED'       => 'Fai segnare il pagamento dall’organizzazione: solo dopo comparirai nell’elenco pubblico.',
+    'MEMBERSHIP_NOT_ALLOWED' => 'Il tuo tesseramento non risulta ammesso per questa gara. Contatta l’organizzazione.',
+    'CERT_MISSING'           => 'Inserisci il certificato medico nel profilo atleta.',
+    'CERT_EXPIRED'           => 'Il certificato medico risulta scaduto. Aggiornalo nel profilo atleta.',
+    'PROFILE_INCOMPLETE'     => 'Completa il profilo atleta (data di nascita e sesso).',
+    default                  => '',
   };
 }
+
 
 function it_datetime(?string $dt): string {
   if (!$dt) return '-';
@@ -102,6 +108,23 @@ function compute_fees_for_race(mysqli $conn, array $race): array {
   ];
 }
 
+function it_payment(string $p): string {
+  return match ($p) {
+    'paid'   => 'Pagato',
+    'unpaid' => 'Non pagato',
+    default  => $p,
+  };
+}
+
+function it_race_status(string $s): string {
+  return match ($s) {
+    'open'   => 'Iscrizioni aperte',
+    'closed' => 'Iscrizioni chiuse',
+    default  => $s,
+  };
+}
+
+
 // ======================================================
 // LOAD RACE
 // ======================================================
@@ -141,20 +164,57 @@ $error = '';
 // Iscrizioni consentite solo se gara open
 $canRegister = (($race['status'] ?? '') === 'open');
 
+// ======================================================
+// Divisioni gara (solo lettura)
+// ======================================================
+$raceDivisions = [];
+$hasDivisions  = false;
+
+$stmt = $conn->prepare("
+  SELECT id, code, label
+  FROM race_divisions
+  WHERE race_id = ? AND is_active = 1
+  ORDER BY sort_order ASC, label ASC
+");
+$stmt->bind_param("i", $race_id);
+$stmt->execute();
+$raceDivisions = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+$stmt->close();
+
+$hasDivisions = !empty($raceDivisions);
+
+
 // Stato iscrizione dell'utente (solo atleta)
 $myReg = null;
 if (($role ?? '') === 'athlete' && !empty($u['id'])) {
   $stmt = $conn->prepare("
-    SELECT id, status, status_reason, payment_status, created_at
-    FROM registrations
-    WHERE race_id=? AND user_id=?
-    LIMIT 1
+    SELECT id, status, status_reason, payment_status, created_at,
+       division_id, division_code, division_label
+FROM registrations
+WHERE race_id=? AND user_id=?
+LIMIT 1
   ");
   $stmt->bind_param("ii", $race_id, $u['id']);
   $stmt->execute();
   $myReg = $stmt->get_result()->fetch_assoc();
   $stmt->close();
 }
+
+$profile_ok = false;
+
+if (($role ?? '') === 'athlete' && !empty($u['id'])) {
+  $stmt = $conn->prepare("SELECT birth_date, gender FROM athlete_profile WHERE user_id=? LIMIT 1");
+  $stmt->bind_param("i", $u['id']);
+  $stmt->execute();
+  $ap = $stmt->get_result()->fetch_assoc();
+  $stmt->close();
+
+  $bd = (string)($ap['birth_date'] ?? '');
+  $g  = strtoupper((string)($ap['gender'] ?? ''));
+
+  $profile_ok = ($bd !== '' && ($g === 'M' || $g === 'F'));
+}
+
 
 // ======================================================
 // POST ATLETA: register / cancel (solo se open)
@@ -213,16 +273,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
         $birth_date = (string)($ap['birth_date'] ?? '');
         $gender     = (string)($ap['gender'] ?? '');
         if ($birth_date === '' || $gender === '') {
-          throw new RuntimeException("Profilo atleta incompleto.");
-        }
+  throw new RuntimeException("PROFILE_INCOMPLETE");
+}
+
 
         // 3) Categoria (salvo code + label)
-        $cat_code = get_category_for_athlete_by_season($conn, $season_id, $birth_date, $gender);
-        if (!$cat_code) {
-          throw new RuntimeException("Categoria non trovata.");
-        }
-        $cat_code_db  = (string)$cat_code;
-        $cat_label_db = (string)$cat_code; // per ora uguale (poi lo miglioriamo con label reale)
+        // 3) Categoria (code + label reale)
+$cat_code = get_category_for_athlete_by_season($conn, $season_id, $birth_date, $gender);
+if (!$cat_code) {
+  throw new RuntimeException("Categoria non trovata.");
+}
+
+$cat_code_db  = (string)$cat_code;
+$cat_label_db = $cat_code_db;
+
+$stmt = $conn->prepare("SELECT rulebook_id, season_year FROM rulebook_seasons WHERE id=? LIMIT 1");
+$stmt->bind_param("i", $season_id);
+$stmt->execute();
+$seasonRow = $stmt->get_result()->fetch_assoc();
+$stmt->close();
+
+if ($seasonRow) {
+  $rb_id = (int)$seasonRow['rulebook_id'];
+  $yr    = (int)$seasonRow['season_year'];
+
+  $stmt = $conn->prepare("
+    SELECT name
+    FROM rulebook_categories
+    WHERE rulebook_id=? AND season_year=? AND code=?
+    LIMIT 1
+  ");
+  $stmt->bind_param("iis", $rb_id, $yr, $cat_code_db);
+  $stmt->execute();
+  $row = $stmt->get_result()->fetch_assoc();
+  $stmt->close();
+
+  if (!empty($row['name'])) {
+    $cat_label_db = (string)$row['name'];
+  }
+}
+
 
         // 4) Fee reali
         $fees = compute_fees_for_race($conn, $race);
@@ -239,6 +329,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
         $fee_platform_cents_db   = (int)$fees['fee_platform_cents'];
         $fee_admin_cents_db      = (int)$fees['fee_admin_cents'];
 
+        // 5) Division (default: NULL)
+        $division_id_db    = null;
+        $division_code_db  = null;
+        $division_label_db = null;
+
+
         // ======================================================
         // STEP 3 (SENZA STRIPE): l'iscrizione parte SEMPRE pending + unpaid
         // ======================================================
@@ -250,6 +346,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
         // Pagamento sempre a zero in fase di iscrizione
         $paid_total_cents_db = 0;
 
+// 5) Division scelta (solo se la gara ha division)
+if ($hasDivisions) {
+  $division_id_in = (int)($_POST['division_id'] ?? 0);
+  if ($division_id_in <= 0) {
+    throw new RuntimeException("Seleziona una divisione.");
+  }
+
+  // verifica che appartenga alla gara ed è attiva
+  $stmt = $conn->prepare("
+    SELECT id, code, label
+    FROM race_divisions
+    WHERE id=? AND race_id=? AND is_active=1
+    LIMIT 1
+  ");
+  $stmt->bind_param("ii", $division_id_in, $race_id);
+  $stmt->execute();
+  $d = $stmt->get_result()->fetch_assoc();
+  $stmt->close();
+
+  if (!$d) {
+    throw new RuntimeException("Divisione non valida.");
+  }
+
+  $division_id_db    = (int)$d['id'];
+  $division_code_db  = (string)$d['code'];
+  $division_label_db = (string)$d['label'];
+}
+
         // 6) UPSERT
         $stmt = $conn->prepare("
           INSERT INTO registrations (
@@ -259,8 +383,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
             rounding_delta_cents, fee_total_cents, organizer_net_cents,
             paid_total_cents,
             fee_race_cents, fee_platform_cents, fee_admin_cents,
-            category_code, category_label
-          ) VALUES (
+            category_code, category_label,
+            division_id, division_code, division_label
+            ) VALUES (
             ?, ?,
             ?, ?, ?, ?,
             ?, ?, ?,
@@ -268,24 +393,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
             ?,
             ?, ?, ?,
             ?, ?
+            , ?, ?, ?
           )
           ON DUPLICATE KEY UPDATE
-            status = VALUES(status),
-            status_reason = VALUES(status_reason),
-            payment_status = VALUES(payment_status),
-            confirmed_at = VALUES(confirmed_at),
-            base_fee_cents = VALUES(base_fee_cents),
-            platform_fee_cents = VALUES(platform_fee_cents),
-            admin_fee_cents = VALUES(admin_fee_cents),
-            rounding_delta_cents = VALUES(rounding_delta_cents),
-            fee_total_cents = VALUES(fee_total_cents),
-            organizer_net_cents = VALUES(organizer_net_cents),
-            paid_total_cents = VALUES(paid_total_cents),
-            fee_race_cents = VALUES(fee_race_cents),
-            fee_platform_cents = VALUES(fee_platform_cents),
-            fee_admin_cents = VALUES(fee_admin_cents),
-            category_code = VALUES(category_code),
-            category_label = VALUES(category_label)
+  status = VALUES(status),
+  status_reason = VALUES(status_reason),
+  payment_status = VALUES(payment_status),
+  confirmed_at = VALUES(confirmed_at),
+  base_fee_cents = VALUES(base_fee_cents),
+  platform_fee_cents = VALUES(platform_fee_cents),
+  admin_fee_cents = VALUES(admin_fee_cents),
+  rounding_delta_cents = VALUES(rounding_delta_cents),
+  fee_total_cents = VALUES(fee_total_cents),
+  organizer_net_cents = VALUES(organizer_net_cents),
+  paid_total_cents = VALUES(paid_total_cents),
+  fee_race_cents = VALUES(fee_race_cents),
+  fee_platform_cents = VALUES(fee_platform_cents),
+  fee_admin_cents = VALUES(fee_admin_cents),
+  category_code = VALUES(category_code),
+  category_label = VALUES(category_label),
+  division_id = VALUES(division_id),
+  division_code = VALUES(division_code),
+  division_label = VALUES(division_label)
+
         ");
         if (!$stmt) {
           throw new RuntimeException("Errore DB (prepare): " . h($conn->error));
@@ -293,26 +423,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
 
         // tipi: ii + ssss + 10i + ss  = 18 parametri
         $stmt->bind_param(
-          "iissssiiiiiiiiiiss",
-          $race_id,
-          $u['id'],
-          $status_db,
-          $status_reason_db,
-          $payment_status_db,
-          $confirmed_at_db,
-          $base_fee_cents_db,
-          $platform_fee_cents_db,
-          $admin_fee_cents_db,
-          $rounding_delta_cents_db,
-          $fee_total_cents_db,
-          $organizer_net_cents_db,
-          $paid_total_cents_db,
-          $fee_race_cents_db,
-          $fee_platform_cents_db,
-          $fee_admin_cents_db,
-          $cat_code_db,
-          $cat_label_db
-        );
+  "iissssiiiiiiiiiississ",
+  $race_id,
+  $u['id'],
+  $status_db,
+  $status_reason_db,
+  $payment_status_db,
+  $confirmed_at_db,
+  $base_fee_cents_db,
+  $platform_fee_cents_db,
+  $admin_fee_cents_db,
+  $rounding_delta_cents_db,
+  $fee_total_cents_db,
+  $organizer_net_cents_db,
+  $paid_total_cents_db,
+  $fee_race_cents_db,
+  $fee_platform_cents_db,
+  $fee_admin_cents_db,
+  $cat_code_db,
+  $cat_label_db,
+  $division_id_db,
+  $division_code_db,
+  $division_label_db
+);
+
 
         if (!$stmt->execute()) {
           $msg = $stmt->error ?: $conn->error;
@@ -325,8 +459,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
         exit;
 
       } catch (Throwable $e) {
-        $error = "Iscrizione non completata: " . $e->getMessage();
-      }
+  $msg = (string)$e->getMessage();
+  if ($msg === 'PROFILE_INCOMPLETE') {
+    $error = "Profilo atleta incompleto: completa data di nascita e sesso in 'Profilo atleta' e riprova.";
+  } else {
+    $error = "Iscrizione non completata: " . $msg;
+  }
+}
+
     }
 
     // -------------------------
@@ -384,7 +524,7 @@ $stmt->close();
 
 // Quota (preview)
 $fees_preview = compute_fees_for_race($conn, $race);
-$paid_total = (int)$fees_preview['fee_total_cents'];
+$fee_total_cents_preview = (int)$fees_preview['fee_total_cents'];
 
 $pageTitle = 'Gara: ' . ($race['title'] ?? '');
 page_header($pageTitle);
@@ -400,10 +540,11 @@ page_header($pageTitle);
   <b>Luogo:</b> <?php echo h($race['location'] ?? '-'); ?><br>
   <b>Data/Ora:</b> <?php echo h(it_datetime($race['start_at'] ?? null)); ?><br>
   <b>Disciplina:</b> <?php echo h($race['discipline'] ?? '-'); ?><br>
-  <b>Stato gara:</b> <?php echo h($race['status'] ?? '-'); ?>
+  <b>Stato gara:</b> <?php echo h(it_race_status((string)($race['status'] ?? ''))); ?>
 </p>
 
-<p><b>Quota iscrizione:</b> € <?php echo h(cents_to_eur($paid_total)); ?></p>
+<p><b>Quota iscrizione:</b> € <?php echo h(cents_to_eur($fee_total_cents_preview)); ?></p>
+<p><small>La conferma dell’iscrizione avviene dopo la verifica del pagamento.</small></p>
 
 <?php if ($error): ?>
   <div style="padding:12px;background:#ffecec;border:1px solid #ffb3b3;margin:12px 0;">
@@ -411,10 +552,11 @@ page_header($pageTitle);
   </div>
 <?php endif; ?>
 
-<h2>Iscritti</h2>
+<h2>Iscritti confermati</h2>
+
 
 <?php if (!$publicRegs): ?>
-  <p>Nessun iscritto confermato (ancora).</p>
+  <p>Al momento non ci sono iscritti confermati.</p>
 <?php else: ?>
   <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;">
     <thead>
@@ -450,7 +592,14 @@ page_header($pageTitle);
 <?php else: ?>
   <?php if (!$canRegister): ?>
     <p><b>Iscrizioni chiuse.</b></p>
+
+  <?php elseif (!$profile_ok): ?>
+    <p><b>Profilo atleta incompleto.</b></p>
+    <p>Completa data di nascita e sesso per poterti iscrivere.</p>
+    <p><a href="athlete_profile.php">Completa profilo atleta</a></p>
+
   <?php else: ?>
+
 
     <?php $st = (string)($myReg['status'] ?? ''); ?>
 
@@ -458,15 +607,44 @@ page_header($pageTitle);
       <p>Non sei iscritto.</p>
       <form method="post">
         <input type="hidden" name="action" value="register">
+
+<?php if ($hasDivisions): ?>
+  <div style="margin:10px 0;">
+    <label for="division_id"><b>Divisione</b></label><br>
+    <select name="division_id" id="division_id" required style="padding:8px 10px; min-width:260px;">
+      <option value="">Seleziona…</option>
+      <?php foreach ($raceDivisions as $d): ?>
+        <option value="<?php echo (int)$d['id']; ?>">
+          <?php echo h((string)$d['label']); ?>
+        </option>
+      <?php endforeach; ?>
+    </select>
+  </div>
+<?php endif; ?>
+
+
         <button type="submit" style="padding:10px 14px;">Iscriviti</button>
       </form>
 
     <?php else: ?>
       <p>
         Stato: <b><?php echo h(it_status($st)); ?></b>
+        <?php if (!empty($myReg['division_label'])): ?>
+  · Divisione: <b><?php echo h((string)$myReg['division_label']); ?></b>
+<?php endif; ?>
         <?php if (!empty($myReg['status_reason'])): ?>
           · <?php echo h(it_reason((string)$myReg['status_reason'])); ?>
         <?php endif; ?>
+        <?php
+  $hint = '';
+  if (!empty($myReg['status_reason'])) {
+    $hint = reason_hint((string)$myReg['status_reason']);
+  }
+?>
+<?php if ($hint): ?>
+  <br><small><?php echo h($hint); ?></small>
+<?php endif; ?>
+
         <?php if (!empty($myReg['payment_status'])): ?>
           · <?php echo h(it_payment((string)$myReg['payment_status'])); ?>
         <?php endif; ?>

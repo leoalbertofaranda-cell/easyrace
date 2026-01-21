@@ -1,5 +1,53 @@
 <?php
+// app/includes/permissions.php (oppure helpers.php)
+
 declare(strict_types=1);
+
+function current_user(): array {
+  $u = auth_user();
+  if (!$u) return [];
+  return $u;
+}
+
+function role(): string {
+  $u = current_user();
+  return (string)($u['role'] ?? '');
+}
+
+function is_superuser(): bool {
+  return role() === 'superuser';
+}
+
+function is_admin(): bool {
+  // se tu usi 'admin' o 'procacciatore', qui li normalizzi
+  return in_array(role(), ['admin','procacciatore'], true);
+}
+
+function is_organizer(): bool {
+  return role() === 'organizer';
+}
+
+function require_manage_org(mysqli $conn, int $org_id): void {
+  $u = current_user();
+  $uid = (int)($u['id'] ?? 0);
+  if ($uid <= 0) { header("HTTP/1.1 403 Forbidden"); exit("Accesso negato."); }
+
+  if (is_superuser()) return;
+
+  // membership su organization_users
+  $stmt = $conn->prepare("
+    SELECT 1
+    FROM organization_users
+    WHERE organization_id=? AND user_id=?
+    LIMIT 1
+  ");
+  $stmt->bind_param("ii", $org_id, $uid);
+  $stmt->execute();
+  $ok = (bool)$stmt->get_result()->fetch_row();
+  $stmt->close();
+
+  if (!$ok) { header("HTTP/1.1 403 Forbidden"); exit("Accesso negato."); }
+}
 
 /**
  * Validazione Codice Fiscale italiano (base + checksum).
