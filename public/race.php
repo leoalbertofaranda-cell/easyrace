@@ -12,10 +12,16 @@ require_once __DIR__ . '/../app/includes/audit.php';
 require_login();
 
 $u = auth_user();
+if (!$u) { header("Location: login.php"); exit; }
+
+[$actor_id, $actor_role] = actor_from_auth($u);
+
+// normalizzazione per FK audit_log: mai 0
+$actor_id   = ($actor_id > 0) ? $actor_id : null;
+$actor_role = ($actor_role !== '') ? $actor_role : null;
+
 $conn = db($config);
 
-$actor_id   = (int)($u['id'] ?? 0);
-$actor_role = (string)($u['role'] ?? '');
 
 
 /**
@@ -90,94 +96,109 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $action = (string)($_POST['action'] ?? '');
   $reg_id = (int)($_POST['reg_id'] ?? 0);
 
+  // snapshot BEFORE per audit
+  $before = null;
+  if ($reg_id > 0) {
+    $stmt = $conn->prepare("
+      SELECT status, payment_status, bib_number
+      FROM registrations
+      WHERE id=? AND race_id=?
+      LIMIT 1
+    ");
+    $stmt->bind_param("ii", $reg_id, $race_id);
+    $stmt->execute();
+    $before = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
 
-// snapshot BEFORE per audit
-$before = null;
-if ($reg_id > 0) {
-  $stmt = $conn->prepare("
-    SELECT status, payment_status, bib_number
-    FROM registrations
-    WHERE id=? AND race_id=?
-    LIMIT 1
-  ");
-  $stmt->bind_param("ii", $reg_id, $race_id);
-  $stmt->execute();
-  $before = $stmt->get_result()->fetch_assoc();
-  $stmt->close();
-
-  if (!$before) {
-    http_response_code(404);
-    exit('Iscrizione non trovata');
+    if (!$before) {
+      http_response_code(404);
+      exit('Iscrizione non trovata');
+    }
   }
-}
 
+  // ======================================================
+  // ANNULLA iscrizione (admin/organizer)
+  // ======================================================
+  if ($reg_id > 0 && $action === 'cancel') {
 
-    // annulla iscrizione (by admin/organizer)
-if ($reg_id > 0 && $action === 'cancel') {
+    $stmt = $conn->prepare("
+      UPDATE registrations
+      SET
+        status='cancelled',
+        status_reason='CANCELLED_BY_ADMIN',
+        payment_status='unpaid',
+        confirmed_at=NULL,
+        paid_total_cents=0,
+        paid_at=NULL,
+        bib_number=NULL
+      WHERE id=? AND race_id=?
+      LIMIT 1
+    ");
+    $stmt->bind_param("ii", $reg_id, $race_id);
+    $stmt->execute();
+    $stmt->close();
 
-  $stmt = $conn->prepare("
-    UPDATE registrations
-    SET
-      status='cancelled',
-      status_reason='CANCELLED_BY_ADMIN',
-      payment_status='unpaid',
-      confirmed_at=NULL,
-      paid_total_cents=0,
-      paid_at=NULL,
-      bib_number=NULL
-    WHERE id=? AND race_id=?
-    LIMIT 1
-  ");
-  $stmt->bind_param("ii", $reg_id, $race_id);
-  $stmt->execute();
-  $stmt->close();
+    audit_log(
+      $conn,
+      'REG_CANCEL',
+      'registration',
+      (int)$reg_id,
+      $actor_id,
+      $actor_role,
+      null,
+      [
+        'race_id'          => (int)$race_id,
+        'organization_id' => (int)$race['organization_id'],
+        'before'           => $before,
+        'after'            => [
+          'status'         => 'cancelled',
+          'payment_status' => 'unpaid',
+          'bib_number'     => null,
+        ]
+      ]
+    );
 
-audit_log(
-  $conn,
-  'REG_CANCEL',
-  'registration',
-  (int)$reg_id,
-  $actor_id,
-  $actor_role,
-  null,
-  [
-    'race_id'          => (int)$race_id,
-    'organization_id' => (int)$race['organization_id'],
-    'before'           => $before,
-    'after'            => [
-      'status'          => 'cancelled',
-      'payment_status'  => 'unpaid'
-    ]
-  ]
-);
-
-
-
-  header("Location: race.php?id=".$race_id);
-  exit;
-}
-
-
+    header("Location: race.php?id=".$race_id);
+    exit;
+  }
 
   // ======================================================
   // MANAGE (organizer / admin / superuser)
   // ======================================================
   if (can_manage()) {
 
-    // chiudi / apri gara
-    if (in_array($action, ['close_race','open_race'], true)) {
-      $new = ($action === 'close_race') ? 'closed' : 'open';
+    // chiudi / apri gara (qui audit lo mettiamo in uno step dopo, se vuoi)
+  if (in_array($action, ['close_race','open_race'], true)) {
+  $new = ($action === 'close_race') ? 'closed' : 'open';
 
-      $stmt = $conn->prepare("UPDATE races SET status=? WHERE id=? LIMIT 1");
-      $stmt->bind_param("si", $new, $race_id);
-      $stmt->execute();
-      $stmt->close();
+  $stmt = $conn->prepare("UPDATE races SET status=? WHERE id=? LIMIT 1");
+  $stmt->bind_param("si", $new, $race_id);
+  $stmt->execute();
+  $stmt->close();
 
-      header("Location: race.php?id=".$race_id);
-      exit;
-    }
+  audit_log(
+    $conn,
+    ($action === 'close_race') ? 'RACE_CLOSE' : 'RACE_OPEN',
+    'race',
+    (int)$race_id,
+    $actor_id,
+    $actor_role,
+    null,
+    [
+      'race_id'          => (int)$race_id,
+      'organization_id' => (int)$race['organization_id'],
+      'after'            => ['status' => $new]
+    ]
+  );
 
-    // pagamento
+  header("Location: race.php?id=".$race_id);
+  exit;
+}
+
+
+    // ======================================================
+    // PAGAMENTO: mark_paid / mark_unpaid
+    // ======================================================
     if ($reg_id > 0 && in_array($action, ['mark_paid','mark_unpaid'], true)) {
 
       $stmt = $conn->prepare("
@@ -189,31 +210,6 @@ audit_log(
       $stmt->execute();
       $cur = $stmt->get_result()->fetch_assoc();
       $stmt->close();
-
-if ($action === 'confirm') {
-  audit_log($conn, 'REG_CONFIRM', 'registration', $reg_id, (int)$race['organization_id'], [
-    'before' => $before,
-    'after'  => ['status' => 'confirmed']
-  ]);
-} else {
- audit_log(
-  $conn,
-  'REG_SET_PENDING',
-  'registration',
-  (int)$reg_id,
-  $actor_id,
-  $actor_role,
-  null,
-  [
-    'race_id'          => (int)$race_id,
-    'organization_id' => (int)$race['organization_id'],
-    'before'          => $before,
-    'after'           => ['status' => 'pending']
-  ]
-);
-
-}
-  
 
       if (!$cur || ($cur['status'] ?? '') === 'cancelled') {
         $error = "Iscrizione non valida.";
@@ -249,12 +245,33 @@ if ($action === 'confirm') {
         $stmt->execute();
         $stmt->close();
 
+        // AUDIT pagamento (coerente, senza firma vecchia)
+        audit_log(
+          $conn,
+          ($action === 'mark_paid') ? 'REG_MARK_PAID' : 'REG_MARK_UNPAID',
+          'registration',
+          (int)$reg_id,
+          $actor_id,
+          $actor_role,
+          null,
+          [
+            'race_id'          => (int)$race_id,
+            'organization_id' => (int)$race['organization_id'],
+            'before'           => $before,
+            'after'            => [
+              'payment_status' => ($action === 'mark_paid') ? 'paid' : 'unpaid'
+            ]
+          ]
+        );
+
         header("Location: race.php?id=".$race_id);
         exit;
       }
     }
 
-    // conferma / torna pending
+    // ======================================================
+    // STATO: confirm / pending
+    // ======================================================
     if ($reg_id > 0 && in_array($action, ['confirm','pending'], true)) {
 
       if ($action === 'confirm') {
@@ -271,60 +288,37 @@ if ($action === 'confirm') {
         ");
       }
 
-     $stmt->bind_param("ii", $reg_id, $race_id);
-$stmt->execute();
-$stmt->close();
+      $stmt->bind_param("ii", $reg_id, $race_id);
+      $stmt->execute();
+      $stmt->close();
 
-// dati attore (utente loggato)
-$actor_id   = (int)($u['id'] ?? 0);
-$actor_role = (string)($u['role'] ?? '');
-
-// audit
-if ($action === 'mark_paid') {
-  audit_log(
-    $conn,
-    'REG_MARK_PAID',
-    'registration',
-    (int)$reg_id,
-    $actor_id,
-    $actor_role,
-    null,
-    [
-      'race_id'         => (int)$race_id,
-      'organization_id'=> (int)$race['organization_id'],
-      'before'          => $before,
-      'after'           => ['payment_status' => 'paid']
-    ]
-  );
-} else {
-// attore (una volta sola prima dei log)
-$actor_id   = (int)($u['id'] ?? 0);
-$actor_role = (string)($u['role'] ?? '');
-
-audit_log(
-  $conn,
-  'REG_MARK_UNPAID',
-  'registration',
-  (int)$reg_id,
-  $actor_id,
-  $actor_role,
-  null,
-  [
-    'race_id'          => (int)$race_id,
-    'organization_id' => (int)$race['organization_id'],
-    'before'           => $before,
-    'after'            => ['payment_status' => 'unpaid']
-  ]
-);
-
-}
-
-
+      // AUDIT stato iscrizione
+      audit_log(
+        $conn,
+        ($action === 'confirm') ? 'REG_CONFIRM' : 'REG_SET_PENDING',
+        'registration',
+        (int)$reg_id,
+        $actor_id,
+        $actor_role,
+        null,
+        [
+          'race_id'          => (int)$race_id,
+          'organization_id' => (int)$race['organization_id'],
+          'before'           => $before,
+          'after'            => [
+            'status' => ($action === 'confirm') ? 'confirmed' : 'pending'
+          ]
+        ]
+      );
 
       header("Location: race.php?id=".$race_id);
       exit;
     }
-  }
+
+  } // end can_manage
+
+} // end POST
+
 
   // ======================================================
   // ATLETA
@@ -355,7 +349,6 @@ audit_log(
 
   }
 
-} // FINE POST
 
    /**
  * ======================================================
