@@ -201,3 +201,36 @@ function race_fee_pick_tier(array $race, ?string $today = null): array {
 
   return ['regular', 'Regular', $regular_cents];
 }
+
+
+/**
+ * Determina il tier tariffario in base alla data
+ * - early: fino a fee_early_until (inclusa)
+ * - regular: dal giorno dopo early_until fino al giorno prima gara
+ * - late: giorno della gara
+ */
+function fee_tier_for_date(array $race, string $todayYmd): string {
+  $early_until = (string)($race['fee_early_until'] ?? '');
+  $race_day    = substr((string)($race['start_at'] ?? ''), 0, 10); // YYYY-MM-DD
+
+  if ($race_day !== '' && $todayYmd === $race_day) {
+    return 'late';
+  }
+
+  if ($early_until !== '' && $todayYmd <= $early_until) {
+    return 'early';
+  }
+
+  return 'regular';
+}
+
+/**
+ * Ritorna la quota in centesimi in base al tier
+ */
+function fee_cents_for_tier(array $race, string $tier): int {
+  return match ($tier) {
+    'early'   => (int)($race['fee_early_cents'] ?? 0),
+    'late'    => (int)($race['fee_late_cents'] ?? 0),
+    default   => (int)($race['fee_regular_cents'] ?? 0),
+  };
+}

@@ -58,6 +58,10 @@ function it_datetime(?string $dt): string {
  * Calcolo fee reale per gara.
  * NB: base fee viene letto da riga races (preferenza: fee_cents, fallback: base_fee_cents).
  */
+/**
+ * Calcolo fee reale per gara.
+ * NB: base fee viene letto da riga races (preferenza: fee_cents, fallback: base_fee_cents).
+ */
 function compute_fees_for_race(mysqli $conn, array $race): array {
   $race_fee_cents = 0;
 
@@ -86,29 +90,42 @@ function compute_fees_for_race(mysqli $conn, array $race): array {
       $admin_fee_settings['round_to_cents'] = (int)($platform['round_to_cents'] ?? 50);
     }
   }
+
+  // Tier (early/regular/late) + fee gara del tier
   [$tier_code, $tier_label, $race_fee_cents] = race_fee_pick_tier($race);
 
-$fees = calc_fees_total($race_fee_cents, $platform, $admin_fee_settings);
+  $fees = calc_fees_total($race_fee_cents, $platform, $admin_fee_settings);
 
-// organizer_net: prendi il valore calcolato (non inventarlo)
-$organizer_net = (int)($fees['organizer_net_cents'] ?? 0);
+  // organizer_net: prendi il valore calcolato (non inventarlo)
+  $organizer_net = (int)($fees['organizer_net_cents'] ?? 0);
 
+  // =========================
+  // FIX: rounding_delta reale
+  // =========================
+  $subtotal = (int)($fees['race_fee_cents'] ?? 0)
+            + (int)($fees['platform_fee_cents'] ?? 0)
+            + (int)($fees['admin_fee_cents'] ?? 0);
+
+  $rounding_delta = (int)($fees['total_cents'] ?? 0) - $subtotal;
 
   return [
-    'base_fee_cents'       => $fees['race_fee_cents'],
-    'platform_fee_cents'   => $fees['platform_fee_cents'],
-    'admin_fee_cents'      => $fees['admin_fee_cents'],
+    'base_fee_cents'       => (int)($fees['race_fee_cents'] ?? 0),
+    'platform_fee_cents'   => (int)($fees['platform_fee_cents'] ?? 0),
+    'admin_fee_cents'      => (int)($fees['admin_fee_cents'] ?? 0),
 
-    'fee_race_cents'       => $fees['race_fee_cents'],
-    'fee_platform_cents'   => $fees['platform_fee_cents'],
-    'fee_admin_cents'      => $fees['admin_fee_cents'],
+    'fee_race_cents'       => (int)($fees['race_fee_cents'] ?? 0),
+    'fee_platform_cents'   => (int)($fees['platform_fee_cents'] ?? 0),
+    'fee_admin_cents'      => (int)($fees['admin_fee_cents'] ?? 0),
 
-    'fee_total_cents'      => $fees['total_cents'],
+    'fee_total_cents'      => (int)($fees['total_cents'] ?? 0),
 
-    'rounding_delta_cents' => 0,
-    'organizer_net_cents'  => $organizer_net,
+    // prima era 0 fisso → ora è il delta reale
+    'rounding_delta_cents' => (int)$rounding_delta,
+
+    'organizer_net_cents'  => (int)$organizer_net,
   ];
 }
+
 
 function it_payment(string $p): string {
   return match ($p) {
@@ -317,9 +334,51 @@ if ($seasonRow) {
   }
 }
 
-
         // 4) Fee reali
         $fees = compute_fees_for_race($conn, $race);
+
+// ======================================================
+// OVERRIDE: usa la base fee del tier (early/regular/late)
+// ======================================================
+if (!function_exists('round_up_to')) {
+  function round_up_to(int $cents, int $step): int {
+    $cents = max(0, $cents);
+    $step  = max(1, $step);
+    return (int)(ceil($cents / $step) * $step);
+  }
+}
+
+$fee_platform_cents = (int)($fees['fee_platform_cents'] ?? $fees['platform_fee_cents'] ?? 0);
+$fee_admin_cents    = (int)($fees['fee_admin_cents']    ?? $fees['admin_fee_cents']    ?? 0);
+
+// prova a prendere lo step se esiste, altrimenti 50 cent
+$round_step_cents = (int)($fees['round_to_cents'] ?? $fees['rounding_step_cents'] ?? 50);
+if ($round_step_cents <= 0) $round_step_cents = 50;
+
+$fee_subtotal_cents = (int)$base_fee_cents + $fee_platform_cents + $fee_admin_cents;
+$fee_total_cents    = (int)round_up_to($fee_subtotal_cents, $round_step_cents);
+
+$rounding_delta_cents = $fee_total_cents - $fee_subtotal_cents;
+
+// sovrascrivo i valori che userai per INSERT/UPDATE registrations
+$fees['base_fee_cents']       = (int)$base_fee_cents;
+$fees['fee_race_cents']       = (int)$base_fee_cents;
+
+$fees['fee_platform_cents']   = $fee_platform_cents;
+$fees['platform_fee_cents']   = $fee_platform_cents;
+
+$fees['fee_admin_cents']      = $fee_admin_cents;
+$fees['admin_fee_cents']      = $fee_admin_cents;
+
+$fees['fee_total_cents']      = (int)$fee_total_cents;
+$fees['rounding_delta_cents'] = (int)$rounding_delta_cents;
+
+$fees['organizer_net_cents']  = (int)$base_fee_cents;
+
+// utile per audit/debug
+$fees['fee_tier'] = (string)$tier;
+
+
 
         $base_fee_cents_db       = (int)$fees['base_fee_cents'];
         $platform_fee_cents_db   = (int)$fees['platform_fee_cents'];
@@ -478,17 +537,20 @@ if ($reg_id <= 0) {
   $reg_id = (int)($tmp['id'] ?? 0);
 }
 
-// audit
-if ($reg_id > 0) {
-  audit_log($conn, 'REG_REGISTER', 'registration', $reg_id, (int)($race['organization_id'] ?? 0), [
-    'race_id' => (int)$race_id,
-    'user_id' => (int)$u['id'],
-    'tier'    => ['code' => (string)$tier_code_db, 'label' => (string)$tier_label_db],
-    'status'  => (string)$status_db,
-    'payment_status' => (string)$payment_status_db,
-    'division_id' => $division_id_db,
-  ]);
-}
+audit_log(
+  $conn,
+  'REG_CREATE',
+  'registration',
+  (int)$reg_id,
+  null,
+  [
+    'race_id'          => (int)$race_id,
+    'user_id'          => (int)($u['id'] ?? 0),
+    'organization_id' => (int)($race['organization_id'] ?? 0),
+    'status'           => 'pending',
+  ]
+);
+
 
 
         header("Location: race_public.php?id=" . $race_id);
@@ -537,12 +599,21 @@ $stmt2->close();
 $reg_id = (int)($tmp['id'] ?? 0);
 
 if ($reg_id > 0) {
-  audit_log($conn, 'REG_CANCEL', 'registration', $reg_id, (int)($race['organization_id'] ?? 0), [
-    'race_id' => (int)$race_id,
-    'user_id' => (int)$u['id'],
-    'reason'  => 'CANCELLED_BY_USER',
-  ]);
+  audit_log(
+    $conn,
+    'REG_CANCEL',
+    'registration',
+    (int)$reg_id,
+    null,
+    [
+      'race_id'          => (int)$race_id,
+      'user_id'          => (int)$u['id'],
+      'organization_id'  => (int)($race['organization_id'] ?? 0),
+      'reason'           => 'CANCELLED_BY_USER',
+    ]
+  );
 }
+
 
 
     header("Location: race_public.php?id=" . $race_id);

@@ -50,11 +50,9 @@ require_org_permission($conn, (int)$row['organization_id'], 'view_reports');
 // AUDIT: log dell'export (prima di qualsiasi output/header CSV)
 audit_log(
   $conn,
-  'EXPORT_RACE_BIBS_CSV',
+  'EXPORT_RACE_BIBS',
   'race',
   (int)$race_id,
-  $actor_id,
-  $actor_role,
   null,
   [
     'race_id'          => (int)$race_id,
@@ -65,6 +63,7 @@ audit_log(
     'type'             => 'crono_bibs'
   ]
 );
+
 
 
 // intestazioni CSV

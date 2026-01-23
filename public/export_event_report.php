@@ -41,8 +41,6 @@ audit_log(
   'EXPORT_EVENT_REPORT',
   'event',
   (int)$event_id,
-  $actor_id,
-  $actor_role,
   null,
   [
     'event_id'         => (int)$event_id,
@@ -50,6 +48,7 @@ audit_log(
     'type'             => 'event_report'
   ]
 );
+
 
 
 header('Content-Type: text/csv; charset=UTF-8');

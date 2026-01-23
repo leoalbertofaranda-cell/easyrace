@@ -42,8 +42,6 @@ audit_log(
   'EXPORT_RACE_REPORT',
   'race',
   (int)$race_id,
-  $actor_id,
-  $actor_role,
   null,
   [
     'race_id'          => (int)$race_id,
@@ -52,6 +50,7 @@ audit_log(
     'type'             => 'race_report'
   ]
 );
+
 
 
 header('Content-Type: text/csv; charset=UTF-8');

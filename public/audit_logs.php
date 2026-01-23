@@ -22,13 +22,18 @@ $race = null;
 
 // se arriva race_id: ricavo org_id e faccio check permessi su quell’org
 if ($race_id > 0) {
+
   $stmt = $conn->prepare("
-    SELECT r.id, e.organization_id, r.title
+    SELECT r.id, r.title, e.organization_id
     FROM races r
     JOIN events e ON e.id = r.event_id
     WHERE r.id=?
     LIMIT 1
   ");
+  if (!$stmt) {
+    header("HTTP/1.1 500 Internal Server Error");
+    exit("Errore DB (prepare race): " . h($conn->error));
+  }
   $stmt->bind_param("i", $race_id);
   $stmt->execute();
   $race = $stmt->get_result()->fetch_assoc();
@@ -39,30 +44,53 @@ if ($race_id > 0) {
     exit("Gara non trovata.");
   }
 
-  $org_id = (int)($race['organization_id'] ?? 0);
-  require_manage_org($conn, $org_id);
-} else {
-  // senza race_id: per ora richiediamo superuser (evitiamo leakage tra org)
-  if (!function_exists('is_superuser') || !is_superuser()) {
-    header("HTTP/1.1 400 Bad Request");
-    exit("Devi passare race_id.");
-  }
+  $race['id'] = (int)$race['id'];
+  $race['organization_id'] = (int)$race['organization_id'];
+  $race['title'] = (string)($race['title'] ?? '');
 }
 
-// Query
+
+// Query (tabella nuova: audit_log)
 $sql = "
-  SELECT id, action, entity_type, entity_id, org_id, payload, created_at
-  FROM audit_logs
+  SELECT
+    al.id,
+    al.created_at,
+    al.action,
+    al.entity_type,
+    al.entity_id,
+    al.organization_id,
+    al.actor_user_id,
+    al.actor_role,
+    al.message,
+    al.meta,
+
+    u.full_name AS actor_name,
+    u.email     AS actor_email
+  FROM audit_log al
+  LEFT JOIN users u ON u.id = al.actor_user_id
   WHERE 1=1
 ";
 $types = "";
 $args  = [];
 
+// se ho org, filtro per org (colonna nuova: organization_id)
 if ($org_id > 0) {
-  $sql .= " AND org_id=? ";
+  $sql .= " AND organization_id=? ";
   $types .= "i";
   $args[] = $org_id;
 }
+
+// se ho race_id, includo sia log diretti della gara sia log collegati via meta.race_id
+if ($race_id > 0) {
+  $sql .= " AND (
+    (entity_type='race' AND entity_id=?)
+    OR (JSON_EXTRACT(meta, '$.race_id') = ?)
+  ) ";
+  $types .= "ii";
+  $args[] = $race_id;
+  $args[] = $race_id;
+}
+
 if ($action !== '') {
   $sql .= " AND action=? ";
   $types .= "s";
@@ -127,26 +155,64 @@ page_header($pageTitle);
         <th>Azione</th>
         <th>Entità</th>
         <th>Org</th>
+        <th>Attore</th>
         <th>Payload</th>
       </tr>
     </thead>
-    <tbody>
-      <?php foreach ($rows as $r): ?>
-        <tr>
-          <td><?php echo (int)$r['id']; ?></td>
-          <td><?php echo h((string)$r['created_at']); ?></td>
-          <td><b><?php echo h((string)$r['action']); ?></b></td>
-          <td><?php echo h((string)$r['entity_type']); ?> #<?php echo (int)$r['entity_id']; ?></td>
-          <td><?php echo h((string)($r['org_id'] ?? '')); ?></td>
-          <td>
-            <details>
-              <summary>Apri</summary>
-              <pre style="white-space:pre-wrap; font-size:12px;"><?php echo h((string)$r['payload']); ?></pre>
-            </details>
-          </td>
-        </tr>
-      <?php endforeach; ?>
-    </tbody>
+   <tbody>
+  <?php foreach ($rows as $r): ?>
+    <tr>
+      <!-- ID -->
+      <td><?php echo (int)$r['id']; ?></td>
+
+      <!-- Data -->
+      <td><?php echo h((string)$r['created_at']); ?></td>
+
+      <!-- Azione -->
+      <td><b><?php echo h((string)$r['action']); ?></b></td>
+
+      <!-- Entità -->
+      <td><?php echo h((string)$r['entity_type']); ?> #<?php echo (int)$r['entity_id']; ?></td>
+
+      <!-- Org -->
+      <td><?php echo (int)($r['organization_id'] ?? 0); ?></td>
+
+      <!-- Attore -->
+      <td>
+        <?php
+          $an = trim((string)($r['actor_name'] ?? ''));
+          $ae = trim((string)($r['actor_email'] ?? ''));
+          $ar = trim((string)($r['actor_role'] ?? ''));
+
+          if ($an !== '') {
+            echo h($an);
+            if ($ar !== '') echo " <small style='color:#666'>(" . h($ar) . ")</small>";
+          } elseif ($ae !== '') {
+            echo h($ae);
+            if ($ar !== '') echo " <small style='color:#666'>(" . h($ar) . ")</small>";
+          } elseif (!empty($r['actor_user_id'])) {
+            echo "User #" . (int)$r['actor_user_id'];
+            if ($ar !== '') echo " <small style='color:#666'>(" . h($ar) . ")</small>";
+          } else {
+            echo "<span style='color:#999'>—</span>";
+          }
+        ?>
+      </td>
+
+      <!-- Payload -->
+      <td>
+        <details>
+          <summary>Apri</summary>
+          <pre style="white-space:pre-wrap; font-size:12px;"><?php
+            // nel DB nuovo il JSON sta in meta
+            echo h((string)($r['meta'] ?? ''));
+          ?></pre>
+        </details>
+      </td>
+    </tr>
+  <?php endforeach; ?>
+</tbody>
+
   </table>
 <?php endif; ?>
 

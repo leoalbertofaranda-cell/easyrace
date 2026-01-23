@@ -1,15 +1,7 @@
 <?php
 require_once __DIR__ . '/../app/includes/bootstrap.php';
-
-if (!function_exists('eur_to_cents')) {
-  function eur_to_cents(string $v): int {
-    $v = trim($v);
-    if ($v === '') return 0;
-    // accetta sia "10,50" che "10.50"
-    $v = str_replace(',', '.', $v);
-    return (int)round(((float)$v) * 100);
-  }
-}
+require_once __DIR__ . '/../app/includes/helpers.php';
+require_once __DIR__ . '/../app/includes/audit.php';
 
 
 require_login();
@@ -17,6 +9,12 @@ require_manage();
 
 $u = auth_user();
 $conn = db($config);
+
+[$actor_id, $actor_role] = actor_from_auth($u);
+$actor_id   = ($actor_id > 0) ? $actor_id : null;
+$actor_role = ($actor_role !== '') ? $actor_role : null;
+
+
 
 /**
  * ======================================================
@@ -185,6 +183,13 @@ $form = [
   'base_fee' => cents_to_money_it((int)($race['base_fee_cents'] ?? 0)),
   'organizer_iban' => (string)($race['organizer_iban'] ?? ''),
   'ref_admin_id' => (string)((int)($race['ref_admin_id'] ?? 0)),
+
+  // --- fee tier (serve per display persistente) ---
+  'fee_early_eur'   => cents_to_money_it((int)($race['fee_early_cents'] ?? 0)),
+  'fee_regular_eur' => cents_to_money_it((int)($race['fee_regular_cents'] ?? 0)),
+  'fee_late_eur'    => cents_to_money_it((int)($race['fee_late_cents'] ?? 0)),
+  'fee_early_until' => (string)($race['fee_early_until'] ?? ''),
+  'fee_late_from'   => (string)($race['fee_late_from'] ?? ''),
 ];
 
 // lista procacciatori (opzionale): prendo utenti role=admin
@@ -198,55 +203,135 @@ if ($res) $admins = $res->fetch_all(MYSQLI_ASSOC);
  * ======================================================
  */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-  $form['title'] = trim((string)($_POST['title'] ?? ''));
-  $form['location'] = trim((string)($_POST['location'] ?? ''));
-  $form['start_at'] = (string)($_POST['start_at'] ?? '');
-  $form['discipline'] = (string)($_POST['discipline'] ?? 'other');
-  $form['status'] = (string)($_POST['status'] ?? 'draft');
-  $form['base_fee'] = trim((string)($_POST['base_fee'] ?? ''));
-  $form['organizer_iban'] = strtoupper(trim((string)($_POST['organizer_iban'] ?? '')));
-  $form['ref_admin_id'] = (string)($_POST['ref_admin_id'] ?? '0');
 
-  $title = $form['title'];
-  $location = $form['location'];
-  $start_at = $form['start_at'] !== '' ? $form['start_at'] : null; // input datetime-local -> ok per DB se colonna DATETIME
+  // contatore ricalcolo (deve esistere sempre)
+  $recalc_count = 0;
+
+  // flag blindato (niente goto)
+  $do_recalc = true;
+
+  // --- input form (SEMPRE su $form, così non sparisce a display) ---
+  $form['title']         = trim((string)($_POST['title'] ?? ''));
+  $form['location']      = trim((string)($_POST['location'] ?? ''));
+  $form['start_at']      = (string)($_POST['start_at'] ?? '');
+  $form['discipline']    = (string)($_POST['discipline'] ?? 'other');
+  $form['status']        = (string)($_POST['status'] ?? 'draft');
+  $form['base_fee']      = trim((string)($_POST['base_fee'] ?? ''));
+  $form['organizer_iban']= strtoupper(trim((string)($_POST['organizer_iban'] ?? '')));
+  $form['ref_admin_id']  = (string)($_POST['ref_admin_id'] ?? '0');
+
+  // fee tier: input
+  $form['fee_early_eur']   = trim((string)($_POST['fee_early_eur'] ?? ''));
+  $form['fee_regular_eur'] = trim((string)($_POST['fee_regular_eur'] ?? ''));
+  $form['fee_late_eur']    = trim((string)($_POST['fee_late_eur'] ?? ''));
+  $form['fee_early_until'] = (string)($_POST['fee_early_until'] ?? '');
+  $form['fee_late_from']   = (string)($_POST['fee_late_from'] ?? '');
+
+  // --- variabili “pulite” ---
+  $title      = $form['title'];
+  $location   = $form['location'];
+  $start_at   = ($form['start_at'] !== '') ? $form['start_at'] : null; // datetime-local -> DATETIME
   $discipline = $form['discipline'];
-  $status = $form['status'];
+  $status     = $form['status'];
 
   $base_fee_cents = money_to_cents($form['base_fee']);
-  $organizer_iban = $form['organizer_iban'] !== '' ? $form['organizer_iban'] : null;
+  $organizer_iban = ($form['organizer_iban'] !== '') ? $form['organizer_iban'] : null;
 
-$fee_early_eur   = (string)($_POST['fee_early_eur'] ?? '');
-$fee_regular_eur = (string)($_POST['fee_regular_eur'] ?? '');
-$fee_late_eur    = (string)($_POST['fee_late_eur'] ?? '');
+  // fee tier (usa eur_to_cents DEFINITA FUORI, es. helpers.php)
+  $fee_early_cents   = eur_to_cents($form['fee_early_eur']);
+  $fee_regular_cents = eur_to_cents($form['fee_regular_eur']);
+  $fee_late_cents    = eur_to_cents($form['fee_late_eur']);
 
-$fee_early_cents   = eur_to_cents($fee_early_eur);
-$fee_regular_cents = eur_to_cents($fee_regular_eur);
-$fee_late_cents    = eur_to_cents($fee_late_eur);
-
-$fee_early_until = trim((string)($_POST['fee_early_until'] ?? ''));
-$fee_late_from   = trim((string)($_POST['fee_late_from'] ?? ''));
-if ($fee_early_until === '') $fee_early_until = null;
-if ($fee_late_from === '')   $fee_late_from = null;
-
-
-if (!function_exists('eur_to_cents')) {
-  function eur_to_cents(string $v): int {
-    $v = str_replace(',', '.', trim($v));
-    if ($v === '') return 0;
-    return (int)round(((float)$v) * 100);
-  }
-}
-
+  // date tier
+  $fee_early_until = trim($form['fee_early_until']);
+  $fee_late_from   = trim($form['fee_late_from']);
+  if ($fee_early_until === '') $fee_early_until = null;
+  if ($fee_late_from === '')   $fee_late_from = null;
 
   $ref_admin_id = (int)$form['ref_admin_id'];
   if ($ref_admin_id <= 0) $ref_admin_id = 0; // useremo NULLIF
 
+  // ======================================================
+  // BLINDATURE RICALCOLO (qui solo flag, non goto)
+  // ======================================================
+  if (($status ?? '') === 'archived') $do_recalc = false;
+  if ((int)$base_fee_cents <= 0)      $do_recalc = false;
+
+
+
+// ======================================================
+// RICALCOLO QUOTE SU REGISTRATIONS (solo NON pagate)
+// ======================================================
+if ($do_recalc) {
+  $stmt = $conn->prepare("
+    UPDATE registrations
+    SET
+      fee_total_cents = ?,
+      platform_fee_cents = ?,
+      admin_fee_cents = ?,
+      organizer_net_cents = ?
+    WHERE
+      race_id = ?
+      AND status <> 'cancelled'
+      AND payment_status = 'unpaid'
+  ");
+
+  $stmt->bind_param(
+    "iiiii",
+    $fee_total_cents,
+    $platform_fee_cents,
+    $admin_fee_cents,
+    $organizer_net_cents,
+    $race_id
+  );
+
+  $stmt->execute();
+  $recalc_count = $stmt->affected_rows;
+  $stmt->close();
+}
+
+
+
+  // ======================================================
+  // VALIDAZIONI + BLINDATURE
+  // ======================================================
   if ($title === '') {
     $error = "Titolo obbligatorio.";
-  } else {
-    // Update semplice e robusto
+    $do_recalc = false; // inutile ricalcolare
+  }
+
+  // se archived: non ricalcolare registrations
+  if ($status === 'archived') {
+    $do_recalc = false;
+  }
+
+  // se base fee 0: non ricalcolare registrations (evita aggiornamenti a 0)
+  if ((int)$base_fee_cents <= 0) {
+    $do_recalc = false;
+  }
+
+  if ($error === '') {
+
     // Update semplice e robusto (con fee tier)
+
+
+// snapshot BEFORE per audit (solo campi rilevanti)
+$stmtB = $conn->prepare("
+  SELECT
+    title, location, start_at, discipline, status,
+    base_fee_cents, organizer_iban, ref_admin_id,
+    fee_early_cents, fee_regular_cents, fee_late_cents,
+    fee_early_until, fee_late_from
+  FROM races
+  WHERE id=? LIMIT 1
+");
+if (!$stmtB) throw new RuntimeException("Errore DB (prepare before): " . h($conn->error));
+$stmtB->bind_param("i", $race_id);
+$stmtB->execute();
+$before_race = $stmtB->get_result()->fetch_assoc();
+$stmtB->close();
+
+
 $stmt = $conn->prepare("
   UPDATE races
   SET
@@ -293,6 +378,216 @@ $stmt->execute();
 $stmt->close();
 
 
+// ======================================================
+// RICALCOLO QUOTE SU REGISTRATIONS (solo NON PAGATI, non cancellati)
+// ======================================================
+if ($do_recalc) {
+
+  $stmtR = $conn->prepare("
+    UPDATE registrations
+    SET
+      fee_total_cents       = ?,
+      organizer_net_cents   = ?,
+      platform_fee_cents    = ?,
+      admin_fee_cents       = ?,
+      rounding_delta_cents  = ?
+    WHERE
+      race_id = ?
+      AND payment_status = 'unpaid'
+      AND status <> 'cancelled'
+  ");
+  if ($stmtR) {
+    $stmtR->bind_param(
+      "iiiiii",
+      $fee_total_cents,
+      $organizer_net_cents,
+      $platform_fee_cents,
+      $admin_fee_cents,
+      $rounding_delta_cents,
+      $race_id
+    );
+    $stmtR->execute();
+    $recalc_count = (int)$stmtR->affected_rows;
+    $stmtR->close();
+  }
+}
+
+
+
+audit_log(
+  $conn,
+  'RACE_EDIT',
+  'race',
+  (int)$race_id,
+  null,
+  [
+    'race_id'            => (int)$race_id,
+    'organization_id'   => (int)($race['organization_id'] ?? 0),
+    'recalc_unpaid_regs'=> (int)$recalc_count,
+    'before'            => $before_race,
+    'after'             => $after_race
+  ]
+);
+
+
+/**
+ * ======================================================
+ * RICALCOLO QUOTE SU REGISTRATIONS (solo NON PAGATI, non cancellati)
+ * ======================================================
+ * Regola: quando cambi le quote della gara, aggiornare i record "unpaid".
+ * Non tocchiamo: payment_status='paid' e status='cancelled'
+ */
+
+// --- helper: admin fee in cents (fixed o percent) ---
+function calc_admin_fee_cents(int $base_cents, ?int $admin_id, array $admin_fee_map): int {
+  if (!$admin_id || $admin_id <= 0) return 0;
+  if (!isset($admin_fee_map[$admin_id])) return 0;
+
+  $s = $admin_fee_map[$admin_id];
+  $type = (string)($s['fee_type'] ?? 'fixed');
+
+  if ($type === 'percent') {
+    $bp = (int)($s['fee_value_bp'] ?? 0);
+    if ($bp <= 0) return 0;
+    return (int) round($base_cents * ($bp / 10000));
+  }
+
+  $fixed = (int)($s['fee_value_cents'] ?? 0);
+  return max(0, $fixed);
+}
+
+$ref_admin_id_int = (int)$ref_admin_id; // già normalizzato sopra
+
+// ======================================================
+// BLINDATURE RICALCOLO
+// ======================================================
+
+$do_recalc = true;
+$recalc_count = 0;
+
+// 1) Se gara archived: non ricalcolo nulla
+if (($status ?? '') === 'archived') {
+  $do_recalc = false;
+}
+
+// 2) Se non ho una base fee valida: non ricalcolo (evita 0)
+if ((int)$base_fee_cents <= 0) {
+  $do_recalc = false;
+}
+
+
+
+// prendo tutte le registrations da ricalcolare
+$regs_to_recalc = [];
+$stmtR = $conn->prepare("
+  SELECT id, fee_tier_code
+  FROM registrations
+  WHERE race_id=?
+    AND payment_status='unpaid'
+    AND status IN ('pending','confirmed','blocked')
+");
+
+$stmtR->bind_param("i", $race_id);
+$stmtR->execute();
+$regs_to_recalc = $stmtR->get_result()->fetch_all(MYSQLI_ASSOC);
+$stmtR->close();
+
+// preparo UPDATE registrations
+$stmtU = $conn->prepare("
+  UPDATE registrations
+  SET
+    base_fee_cents=?,
+    platform_fee_cents=?,
+    admin_fee_cents=?,
+    rounding_delta_cents=?,
+    fee_total_cents=?,
+    organizer_net_cents=?,
+
+    fee_race_cents=?,
+    fee_platform_cents=?,
+    fee_admin_cents=?,
+
+    fee_tier_label=?
+  WHERE id=? AND race_id=?
+  LIMIT 1
+");
+
+if (!$stmtU) {
+  throw new RuntimeException("Errore DB (prepare update registrations): " . h($conn->error));
+}
+
+$recalc_count = 0;
+
+foreach ($regs_to_recalc as $rr) {
+  $reg_id = (int)$rr['id'];
+  $tier   = (string)($rr['fee_tier_code'] ?? 'regular');
+
+  // 1) quota “gara” in base al tier
+  $race_fee_cents = 0;
+
+  if ($tier === 'early') {
+    $race_fee_cents = (int)($fee_early_cents ?? 0);
+    if ($race_fee_cents <= 0) $race_fee_cents = (int)$base_fee_cents;
+    $tier_label = 'Early';
+  } elseif ($tier === 'late') {
+    $race_fee_cents = (int)($fee_late_cents ?? 0);
+    if ($race_fee_cents <= 0) $race_fee_cents = (int)$base_fee_cents;
+    $tier_label = 'Late';
+  } else {
+    // regular
+    $race_fee_cents = (int)($fee_regular_cents ?? 0);
+    if ($race_fee_cents <= 0) $race_fee_cents = (int)$base_fee_cents;
+    $tier_label = 'Regular';
+  }
+
+  $race_fee_cents = max(0, (int)$race_fee_cents);
+
+  // 2) fee piattaforma (da platform_settings già caricati in $ps)
+  $platform_cents = calc_platform_fee_cents($race_fee_cents, $ps);
+  $platform_cents = max(0, (int)$platform_cents);
+
+  // 3) fee admin/procacciatore (da admin_settings già caricati in $admin_fee_map)
+  $admin_cents = calc_admin_fee_cents($race_fee_cents, $ref_admin_id_int, $admin_fee_map);
+  $admin_cents = max(0, (int)$admin_cents);
+
+  // 4) totale + arrotondamento
+  $pre_total = $race_fee_cents + $platform_cents + $admin_cents;
+
+  $step = (int)($ps['round_to_cents'] ?? 0);
+  $rounded_total = ($step > 0) ? round_up_to($pre_total, $step) : $pre_total;
+
+  $rounding_delta = $rounded_total - $pre_total; // può essere 0 o positivo
+
+  // organizer_net: per ora = quota gara (organizzatore)
+  $organizer_net = $race_fee_cents;
+
+  // UPDATE row
+  $stmtU->bind_param(
+    "iiiiiiiiisii",
+    $race_fee_cents,    // base_fee_cents
+    $platform_cents,    // platform_fee_cents
+    $admin_cents,       // admin_fee_cents
+    $rounding_delta,    // rounding_delta_cents
+    $rounded_total,     // fee_total_cents
+    $organizer_net,     // organizer_net_cents
+
+    $race_fee_cents,    // fee_race_cents
+    $platform_cents,    // fee_platform_cents
+    $admin_cents,       // fee_admin_cents
+
+    $tier_label,        // fee_tier_label
+    $reg_id,            // id
+    $race_id            // race_id
+  );
+
+  $stmtU->execute();
+  $recalc_count++;
+}
+
+$stmtU->close();
+
+
+
     // ricarico per sicurezza (così vedi subito aggiornato)
     header("Location: race_edit.php?id=".$race_id);
     exit;
@@ -323,24 +618,17 @@ $stmt->close();
   <h3>Quote iscrizione</h3>
 
 <label>Early (€)</label><br>
-<input type="number" step="0.01" name="fee_early_eur"
-       value="<?php echo h(cents_to_eur((int)($race['fee_early_cents'] ?? 0))); ?>"><br><br>
+<input type="text" inputmode="decimal" name="fee_early_eur"
+       value="<?php echo h($form['fee_early_eur'] ?? ''); ?>"><br><br>
 
 <label>Regular (€)</label><br>
-<input type="number" step="0.01" name="fee_regular_eur"
-       value="<?php echo h(cents_to_eur((int)($race['fee_regular_cents'] ?? 0))); ?>"><br><br>
+<input type="text" inputmode="decimal" name="fee_regular_eur"
+       value="<?php echo h($form['fee_regular_eur'] ?? ''); ?>"><br><br>
 
 <label>Late (€)</label><br>
-<input type="number" step="0.01" name="fee_late_eur"
-       value="<?php echo h(cents_to_eur((int)($race['fee_late_cents'] ?? 0))); ?>"><br><br>
+<input type="text" inputmode="decimal" name="fee_late_eur"
+       value="<?php echo h($form['fee_late_eur'] ?? ''); ?>"><br><br>
 
-<label>Early fino al (YYYY-MM-DD)</label><br>
-<input type="date" name="fee_early_until"
-       value="<?php echo h((string)($race['fee_early_until'] ?? '')); ?>"><br><br>
-
-<label>Late da (YYYY-MM-DD)</label><br>
-<input type="date" name="fee_late_from"
-       value="<?php echo h((string)($race['fee_late_from'] ?? '')); ?>"><br><br>
 
 
     <label>Titolo *</label><br>

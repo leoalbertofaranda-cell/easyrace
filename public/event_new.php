@@ -1,12 +1,21 @@
 <?php
 require_once __DIR__ . '/../app/includes/bootstrap.php';
+require_once __DIR__ . '/../app/includes/audit.php';
+
 require_login();
 require_manage();
 
 $u = auth_user();
+if (!$u) { header("Location: login.php"); exit; }
+
+[$actor_id, $actor_role] = actor_from_auth($u);
+$actor_id   = ($actor_id > 0) ? $actor_id : null;
+$actor_role = ($actor_role !== '') ? $actor_role : null;
+
 $conn = db($config);
 
 $org_id = (int)($_GET['org_id'] ?? 0);
+
 
 // verifica che l’org appartenga all’utente
 $stmt = $conn->prepare("SELECT 1 FROM organization_users WHERE organization_id=? AND user_id=? LIMIT 1");
@@ -20,7 +29,12 @@ $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $title = trim((string)($_POST['title'] ?? ''));
   $desc  = trim((string)($_POST['description'] ?? ''));
-  $starts_on = $_POST['starts_on'] ?: null;
+  $starts_on = (string)($_POST['starts_on'] ?? '');
+$starts_on = $starts_on !== '' ? $starts_on : null;
+
+$ends_on = (string)($_POST['ends_on'] ?? '');
+$ends_on = $ends_on !== '' ? $ends_on : null;
+
   $ends_on   = $_POST['ends_on'] ?: null;
   $status = $_POST['status'] ?? 'draft';
 
@@ -31,6 +45,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $stmt->execute();
     $newId = (int)$conn->insert_id;
     $stmt->close();
+
+    audit_log(
+  $conn,
+  'EVENT_CREATE',
+  'event',
+  (int)$event_id,
+  null,
+  [
+    'event_id'         => (int)$event_id,
+    'organization_id'  => (int)($org_id ?? 0),
+    'title'            => (string)($title ?? ''),
+  ]
+);
+
+
+
     header("Location: event_detail.php?id=".$newId);
     exit;
   }

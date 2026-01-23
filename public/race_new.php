@@ -141,6 +141,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $form['base_fee'] = trim((string)($_POST['base_fee'] ?? ''));
   $form['organizer_iban'] = strtoupper(trim((string)($_POST['organizer_iban'] ?? '')));
   $form['ref_admin_id'] = (string)($_POST['ref_admin_id'] ?? '0');
+  $form['fee_early_eur']   = trim((string)($_POST['fee_early_eur'] ?? ''));
+$form['fee_regular_eur'] = trim((string)($_POST['fee_regular_eur'] ?? ''));
+$form['fee_late_eur']    = trim((string)($_POST['fee_late_eur'] ?? ''));
+$form['fee_early_until'] = (string)($_POST['fee_early_until'] ?? '');
+$form['fee_late_from']   = (string)($_POST['fee_late_from'] ?? '');
+
 
   $title = $form['title'];
   $location = $form['location'];
@@ -286,10 +292,36 @@ $admin_fee_map_cents = $admin_fee_map_cents ?? [];
     </div>
   </div>
 
-  <div style="flex:1; min-width:240px;">
-    <label for="total_fee_preview">
-      Quota online (finale atleta)
-    </label><br>
+ <?php if (false): ?>
+
+<h3>Quote iscrizione (opzionali)</h3>
+
+<label>Early (€)</label><br>
+<input type="number" step="0.01" name="fee_early_eur"
+  value="<?php echo h(cents_to_eur((int)($race['fee_early_cents'] ?? 0))); ?>"><br><br>
+
+<label>Early fino al</label><br>
+<input type="date" name="fee_early_until"
+  value="<?php echo h((string)($race['fee_early_until'] ?? '')); ?>"><br><br>
+
+<label>Regular (€)</label><br>
+<input type="number" step="0.01" name="fee_regular_eur"
+  value="<?php echo h(cents_to_eur((int)($race['fee_regular_cents'] ?? 0))); ?>"><br><br>
+
+<label>Late (€) – valido il giorno gara</label><br>
+<input type="number" step="0.01" name="fee_late_eur"
+  value="<?php echo h(cents_to_eur((int)($race['fee_late_cents'] ?? 0))); ?>"><br><br>
+
+<div style="font-size:12px;color:#666;">
+  Regular vale dal giorno successivo alla scadenza Early fino al giorno prima della gara.
+  Late vale il giorno della gara (data gara).
+</div>
+
+
+<?php endif; ?>
+
+
+
     <input
       id="total_fee_preview"
       value=""

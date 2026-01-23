@@ -58,11 +58,9 @@ $fname = sprintf(
 // AUDIT: log dell'export (prima di qualsiasi output/header CSV)
 audit_log(
   $conn,
-  'EXPORT_RACE_REGS_CSV',
+  'EXPORT_RACE_REGS',
   'race',
   (int)$race_id,
-  $actor_id,
-  $actor_role,
   null,
   [
     'race_id'          => (int)$race_id,
@@ -72,6 +70,7 @@ audit_log(
     'type'             => 'segreteria'
   ]
 );
+
 
 header('Content-Type: text/csv; charset=UTF-8');
 header('Content-Disposition: attachment; filename="'.$fname.'"');

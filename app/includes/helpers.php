@@ -137,3 +137,14 @@ function actor_from_auth(?array $u): array {
 
   return [$actor_id, $actor_role];
 }
+
+
+if (!function_exists('eur_to_cents')) {
+  function eur_to_cents(string $v): int {
+    $v = trim($v);
+    if ($v === '') return 0;
+    $v = str_replace(',', '.', $v);
+    if (!is_numeric($v)) return 0;
+    return (int) round(((float)$v) * 100);
+  }
+}
