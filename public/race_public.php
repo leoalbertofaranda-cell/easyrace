@@ -86,11 +86,13 @@ function compute_fees_for_race(mysqli $conn, array $race): array {
       $admin_fee_settings['round_to_cents'] = (int)($platform['round_to_cents'] ?? 50);
     }
   }
+  [$tier_code, $tier_label, $race_fee_cents] = race_fee_pick_tier($race);
 
-  $fees = calc_fees_total($race_fee_cents, $platform, $admin_fee_settings);
+$fees = calc_fees_total($race_fee_cents, $platform, $admin_fee_settings);
 
-  // organizer_net: per ora = base (poi lo colleghiamo alla logica reale delle fee platform/admin)
-  $organizer_net = $fees['race_fee_cents'];
+// organizer_net: prendi il valore calcolato (non inventarlo)
+$organizer_net = (int)($fees['organizer_net_cents'] ?? 0);
+
 
   return [
     'base_fee_cents'       => $fees['race_fee_cents'],
@@ -189,8 +191,10 @@ $myReg = null;
 if (($role ?? '') === 'athlete' && !empty($u['id'])) {
   $stmt = $conn->prepare("
     SELECT id, status, status_reason, payment_status, created_at,
+       fee_tier_label,
        division_id, division_code, division_label
 FROM registrations
+
 WHERE race_id=? AND user_id=?
 LIMIT 1
   ");
@@ -374,56 +378,62 @@ if ($hasDivisions) {
   $division_label_db = (string)$d['label'];
 }
 
-        // 6) UPSERT
-        $stmt = $conn->prepare("
-          INSERT INTO registrations (
-            race_id, user_id,
-            status, status_reason, payment_status, confirmed_at,
-            base_fee_cents, platform_fee_cents, admin_fee_cents,
-            rounding_delta_cents, fee_total_cents, organizer_net_cents,
-            paid_total_cents,
-            fee_race_cents, fee_platform_cents, fee_admin_cents,
-            category_code, category_label,
-            division_id, division_code, division_label
-            ) VALUES (
-            ?, ?,
-            ?, ?, ?, ?,
-            ?, ?, ?,
-            ?, ?, ?,
-            ?,
-            ?, ?, ?,
-            ?, ?
-            , ?, ?, ?
-          )
-          ON DUPLICATE KEY UPDATE
-  status = VALUES(status),
-  status_reason = VALUES(status_reason),
-  payment_status = VALUES(payment_status),
-  confirmed_at = VALUES(confirmed_at),
-  base_fee_cents = VALUES(base_fee_cents),
-  platform_fee_cents = VALUES(platform_fee_cents),
-  admin_fee_cents = VALUES(admin_fee_cents),
-  rounding_delta_cents = VALUES(rounding_delta_cents),
-  fee_total_cents = VALUES(fee_total_cents),
-  organizer_net_cents = VALUES(organizer_net_cents),
-  paid_total_cents = VALUES(paid_total_cents),
-  fee_race_cents = VALUES(fee_race_cents),
-  fee_platform_cents = VALUES(fee_platform_cents),
-  fee_admin_cents = VALUES(fee_admin_cents),
-  category_code = VALUES(category_code),
-  category_label = VALUES(category_label),
-  division_id = VALUES(division_id),
-  division_code = VALUES(division_code),
-  division_label = VALUES(division_label)
+ // 6) UPSERT (con snapshot tier)
+$stmt = $conn->prepare("
+  INSERT INTO registrations (
+    race_id, user_id,
+    status, status_reason, payment_status, confirmed_at,
+    base_fee_cents, platform_fee_cents, admin_fee_cents,
+    rounding_delta_cents, fee_total_cents, organizer_net_cents,
+    paid_total_cents,
+    fee_race_cents, fee_platform_cents, fee_admin_cents,
+    fee_tier_code, fee_tier_label,
+    category_code, category_label,
+    division_id, division_code, division_label
+  ) VALUES (
+    ?, ?,
+    ?, ?, ?, ?,
+    ?, ?, ?,
+    ?, ?, ?,
+    ?,
+    ?, ?, ?,
+    ?, ?,
+    ?, ?,
+    ?, ?, ?
+  )
+  ON DUPLICATE KEY UPDATE
+    status = VALUES(status),
+    status_reason = VALUES(status_reason),
+    payment_status = VALUES(payment_status),
+    confirmed_at = VALUES(confirmed_at),
+    base_fee_cents = VALUES(base_fee_cents),
+    platform_fee_cents = VALUES(platform_fee_cents),
+    admin_fee_cents = VALUES(admin_fee_cents),
+    rounding_delta_cents = VALUES(rounding_delta_cents),
+    fee_total_cents = VALUES(fee_total_cents),
+    organizer_net_cents = VALUES(organizer_net_cents),
+    paid_total_cents = VALUES(paid_total_cents),
+    fee_race_cents = VALUES(fee_race_cents),
+    fee_platform_cents = VALUES(fee_platform_cents),
+    fee_admin_cents = VALUES(fee_admin_cents),
+    fee_tier_code = VALUES(fee_tier_code),
+    fee_tier_label = VALUES(fee_tier_label),
+    category_code = VALUES(category_code),
+    category_label = VALUES(category_label),
+    division_id = VALUES(division_id),
+    division_code = VALUES(division_code),
+    division_label = VALUES(division_label)
+");
 
-        ");
-        if (!$stmt) {
-          throw new RuntimeException("Errore DB (prepare): " . h($conn->error));
-        }
+if (!$stmt) {
+  throw new RuntimeException("Errore DB (prepare): " . h($conn->error));
+}
 
-        // tipi: ii + ssss + 10i + ss  = 18 parametri
-        $stmt->bind_param(
-  "iissssiiiiiiiiiississ",
+// calcolo tier qui (così hai i valori per la bind)
+[$tier_code_db, $tier_label_db, $_fee] = race_fee_pick_tier($race);
+
+$stmt->bind_param(
+  "iissssiiiiiiiiiissssiss",
   $race_id,
   $u['id'],
   $status_db,
@@ -440,6 +450,8 @@ if ($hasDivisions) {
   $fee_race_cents_db,
   $fee_platform_cents_db,
   $fee_admin_cents_db,
+  $tier_code_db,
+  $tier_label_db,
   $cat_code_db,
   $cat_label_db,
   $division_id_db,
@@ -447,13 +459,37 @@ if ($hasDivisions) {
   $division_label_db
 );
 
+if (!$stmt->execute()) {
+  $msg = $stmt->error ?: $conn->error;
+  $stmt->close();
+  throw new RuntimeException("Errore DB (execute): " . h($msg));
+}
+$stmt->close();
 
-        if (!$stmt->execute()) {
-          $msg = $stmt->error ?: $conn->error;
-          $stmt->close();
-          throw new RuntimeException("Errore DB (execute): " . h($msg));
-        }
-        $stmt->close();
+// prendi id registrazione appena creata/aggiornata
+$reg_id = (int)$conn->insert_id;
+if ($reg_id <= 0) {
+  // se era DUPLICATE KEY UPDATE, insert_id può essere 0: recupero id
+  $stmt2 = $conn->prepare("SELECT id FROM registrations WHERE race_id=? AND user_id=? LIMIT 1");
+  $stmt2->bind_param("ii", $race_id, $u['id']);
+  $stmt2->execute();
+  $tmp = $stmt2->get_result()->fetch_assoc();
+  $stmt2->close();
+  $reg_id = (int)($tmp['id'] ?? 0);
+}
+
+// audit
+if ($reg_id > 0) {
+  audit_log($conn, 'REG_REGISTER', 'registration', $reg_id, (int)($race['organization_id'] ?? 0), [
+    'race_id' => (int)$race_id,
+    'user_id' => (int)$u['id'],
+    'tier'    => ['code' => (string)$tier_code_db, 'label' => (string)$tier_label_db],
+    'status'  => (string)$status_db,
+    'payment_status' => (string)$payment_status_db,
+    'division_id' => $division_id_db,
+  ]);
+}
+
 
         header("Location: race_public.php?id=" . $race_id);
         exit;
@@ -491,6 +527,24 @@ if ($action === 'cancel') {
     $stmt->execute();
     $stmt->close();
 
+// recupero reg id per audit
+$stmt2 = $conn->prepare("SELECT id FROM registrations WHERE race_id=? AND user_id=? LIMIT 1");
+$stmt2->bind_param("ii", $race_id, $u['id']);
+$stmt2->execute();
+$tmp = $stmt2->get_result()->fetch_assoc();
+$stmt2->close();
+
+$reg_id = (int)($tmp['id'] ?? 0);
+
+if ($reg_id > 0) {
+  audit_log($conn, 'REG_CANCEL', 'registration', $reg_id, (int)($race['organization_id'] ?? 0), [
+    'race_id' => (int)$race_id,
+    'user_id' => (int)$u['id'],
+    'reason'  => 'CANCELLED_BY_USER',
+  ]);
+}
+
+
     header("Location: race_public.php?id=" . $race_id);
     exit;
 
@@ -525,6 +579,8 @@ $stmt->close();
 // Quota (preview)
 $fees_preview = compute_fees_for_race($conn, $race);
 $fee_total_cents_preview = (int)$fees_preview['fee_total_cents'];
+[$tier_code_preview, $tier_label_preview, $_fee] = race_fee_pick_tier($race);
+
 
 $pageTitle = 'Gara: ' . ($race['title'] ?? '');
 page_header($pageTitle);
@@ -543,7 +599,11 @@ page_header($pageTitle);
   <b>Stato gara:</b> <?php echo h(it_race_status((string)($race['status'] ?? ''))); ?>
 </p>
 
-<p><b>Quota iscrizione:</b> € <?php echo h(cents_to_eur($fee_total_cents_preview)); ?></p>
+<p>
+  <b>Quota iscrizione:</b>
+  € <?php echo h(cents_to_eur($fee_total_cents_preview)); ?>
+  <small>(<?php echo h($tier_label_preview); ?>)</small>
+</p>
 <p><small>La conferma dell’iscrizione avviene dopo la verifica del pagamento.</small></p>
 
 <?php if ($error): ?>
@@ -628,28 +688,27 @@ page_header($pageTitle);
 
     <?php else: ?>
       <p>
-        Stato: <b><?php echo h(it_status($st)); ?></b>
-        <?php if (!empty($myReg['division_label'])): ?>
-  · Divisione: <b><?php echo h((string)$myReg['division_label']); ?></b>
-<?php endif; ?>
-        <?php if (!empty($myReg['status_reason'])): ?>
-          · <?php echo h(it_reason((string)$myReg['status_reason'])); ?>
-        <?php endif; ?>
-        <?php
-  $hint = '';
-  if (!empty($myReg['status_reason'])) {
-    $hint = reason_hint((string)$myReg['status_reason']);
-  }
-?>
-<?php if ($hint): ?>
-  <br><small><?php echo h($hint); ?></small>
-<?php endif; ?>
+  Stato: <b><?php echo h(it_status($st)); ?></b>
 
-        <?php if (!empty($myReg['payment_status'])): ?>
-          · <?php echo h(it_payment((string)$myReg['payment_status'])); ?>
-        <?php endif; ?>
-        · dal <?php echo h(it_datetime($myReg['created_at'] ?? null)); ?>
-      </p>
+  <?php if (!empty($myReg['division_label'])): ?>
+    · Divisione: <b><?php echo h((string)$myReg['division_label']); ?></b>
+  <?php endif; ?>
+
+  <?php if (!empty($myReg['status_reason'])): ?>
+    · <?php echo h(it_reason((string)$myReg['status_reason'])); ?>
+  <?php endif; ?>
+
+  <?php if (!empty($myReg['fee_tier_label'])): ?>
+    · Tariffa: <b><?php echo h((string)$myReg['fee_tier_label']); ?></b>
+  <?php endif; ?>
+
+  <?php if (!empty($myReg['payment_status'])): ?>
+    · <?php echo h(it_payment((string)$myReg['payment_status'])); ?>
+  <?php endif; ?>
+
+  · dal <?php echo h(it_datetime($myReg['created_at'] ?? null)); ?>
+</p>
+
 
       <?php if ($st === 'pending'): ?>
         <p style="margin-top:6px;">

@@ -156,3 +156,48 @@ function calc_fees_total(
 function cents_to_eur(int $cents): string {
   return number_format($cents / 100, 2, ',', '.');
 }
+
+
+function race_fee_pick_tier(array $race, ?string $today = null): array {
+  // ritorna: [tier_code, tier_label, fee_cents]
+  $today = $today ?: date('Y-m-d');
+
+  $early_until = trim((string)($race['fee_early_until'] ?? ''));
+  $late_from   = trim((string)($race['fee_late_from'] ?? ''));
+
+  $early_cents   = (int)($race['fee_early_cents'] ?? 0);
+  $regular_cents = (int)($race['fee_regular_cents'] ?? 0);
+  $late_cents    = (int)($race['fee_late_cents'] ?? 0);
+
+  // fallback: se regular non è settato, usa fee_cents / base_fee_cents
+  if ($regular_cents <= 0) {
+    if (isset($race['fee_cents'])) {
+      $regular_cents = (int)$race['fee_cents'];
+    } elseif (isset($race['base_fee_cents'])) {
+      $regular_cents = (int)$race['base_fee_cents'];
+    }
+  }
+
+  // valida formato date base
+  $is_date = static function(string $d): bool {
+    return (bool)preg_match('/^\d{4}-\d{2}-\d{2}$/', $d);
+  };
+  if ($early_until !== '' && !$is_date($early_until)) $early_until = '';
+  if ($late_from !== '' && !$is_date($late_from)) $late_from = '';
+
+  // se invertite, ignora early (resta regular/late)
+  if ($early_until !== '' && $late_from !== '' && $early_until >= $late_from) {
+    $early_until = '';
+  }
+
+  // precedence: late > early > regular
+  if ($late_from !== '' && $today >= $late_from && $late_cents > 0) {
+    return ['late', 'Late', $late_cents];
+  }
+
+  if ($early_until !== '' && $today <= $early_until && $early_cents > 0) {
+    return ['early', 'Early', $early_cents];
+  }
+
+  return ['regular', 'Regular', $regular_cents];
+}

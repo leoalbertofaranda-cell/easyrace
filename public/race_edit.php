@@ -1,5 +1,17 @@
 <?php
 require_once __DIR__ . '/../app/includes/bootstrap.php';
+
+if (!function_exists('eur_to_cents')) {
+  function eur_to_cents(string $v): int {
+    $v = trim($v);
+    if ($v === '') return 0;
+    // accetta sia "10,50" che "10.50"
+    $v = str_replace(',', '.', $v);
+    return (int)round(((float)$v) * 100);
+  }
+}
+
+
 require_login();
 require_manage();
 
@@ -204,6 +216,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $base_fee_cents = money_to_cents($form['base_fee']);
   $organizer_iban = $form['organizer_iban'] !== '' ? $form['organizer_iban'] : null;
 
+$fee_early_eur   = (string)($_POST['fee_early_eur'] ?? '');
+$fee_regular_eur = (string)($_POST['fee_regular_eur'] ?? '');
+$fee_late_eur    = (string)($_POST['fee_late_eur'] ?? '');
+
+$fee_early_cents   = eur_to_cents($fee_early_eur);
+$fee_regular_cents = eur_to_cents($fee_regular_eur);
+$fee_late_cents    = eur_to_cents($fee_late_eur);
+
+$fee_early_until = trim((string)($_POST['fee_early_until'] ?? ''));
+$fee_late_from   = trim((string)($_POST['fee_late_from'] ?? ''));
+if ($fee_early_until === '') $fee_early_until = null;
+if ($fee_late_from === '')   $fee_late_from = null;
+
+
+if (!function_exists('eur_to_cents')) {
+  function eur_to_cents(string $v): int {
+    $v = str_replace(',', '.', trim($v));
+    if ($v === '') return 0;
+    return (int)round(((float)$v) * 100);
+  }
+}
+
+
   $ref_admin_id = (int)$form['ref_admin_id'];
   if ($ref_admin_id <= 0) $ref_admin_id = 0; // useremo NULLIF
 
@@ -211,34 +246,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $error = "Titolo obbligatorio.";
   } else {
     // Update semplice e robusto
-    $stmt = $conn->prepare("
-      UPDATE races
-      SET
-        title=?,
-        location=?,
-        start_at=?,
-        discipline=?,
-        status=?,
-        base_fee_cents=?,
-        organizer_iban=?,
-        ref_admin_id=NULLIF(?,0)
-      WHERE id=?
-      LIMIT 1
-    ");
-    $stmt->bind_param(
-      "sssssissi",
-      $title,
-      $location,
-      $start_at,
-      $discipline,
-      $status,
-      $base_fee_cents,
-      $organizer_iban,
-      $ref_admin_id,
-      $race_id
-    );
-    $stmt->execute();
-    $stmt->close();
+    // Update semplice e robusto (con fee tier)
+$stmt = $conn->prepare("
+  UPDATE races
+  SET
+    title=?,
+    location=?,
+    start_at=?,
+    discipline=?,
+    status=?,
+    base_fee_cents=?,
+    organizer_iban=?,
+    ref_admin_id=NULLIF(?,0),
+    fee_early_cents=?,
+    fee_regular_cents=?,
+    fee_late_cents=?,
+    fee_early_until=?,
+    fee_late_from=?
+  WHERE id=?
+  LIMIT 1
+");
+
+if (!$stmt) {
+  throw new RuntimeException("Errore DB (prepare): " . h($conn->error));
+}
+
+$stmt->bind_param(
+  "sssssisiiiissi",
+  $title,
+  $location,
+  $start_at,
+  $discipline,
+  $status,
+  $base_fee_cents,
+  $organizer_iban,
+  $ref_admin_id,
+  $fee_early_cents,
+  $fee_regular_cents,
+  $fee_late_cents,
+  $fee_early_until,
+  $fee_late_from,
+  $race_id
+);
+
+$stmt->execute();
+$stmt->close();
+
 
     // ricarico per sicurezza (così vedi subito aggiornato)
     header("Location: race_edit.php?id=".$race_id);
@@ -266,6 +319,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <?php endif; ?>
 
   <form method="post">
+
+  <h3>Quote iscrizione</h3>
+
+<label>Early (€)</label><br>
+<input type="number" step="0.01" name="fee_early_eur"
+       value="<?php echo h(cents_to_eur((int)($race['fee_early_cents'] ?? 0))); ?>"><br><br>
+
+<label>Regular (€)</label><br>
+<input type="number" step="0.01" name="fee_regular_eur"
+       value="<?php echo h(cents_to_eur((int)($race['fee_regular_cents'] ?? 0))); ?>"><br><br>
+
+<label>Late (€)</label><br>
+<input type="number" step="0.01" name="fee_late_eur"
+       value="<?php echo h(cents_to_eur((int)($race['fee_late_cents'] ?? 0))); ?>"><br><br>
+
+<label>Early fino al (YYYY-MM-DD)</label><br>
+<input type="date" name="fee_early_until"
+       value="<?php echo h((string)($race['fee_early_until'] ?? '')); ?>"><br><br>
+
+<label>Late da (YYYY-MM-DD)</label><br>
+<input type="date" name="fee_late_from"
+       value="<?php echo h((string)($race['fee_late_from'] ?? '')); ?>"><br><br>
+
 
     <label>Titolo *</label><br>
     <input name="title" value="<?php echo h($form['title']); ?>" style="width:100%;padding:10px;margin:6px 0 12px;" required>

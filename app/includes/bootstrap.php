@@ -2,6 +2,10 @@
 declare(strict_types=1);
 
 $config = require __DIR__ . '/config.php';
+require_once __DIR__ . '/audit.php';
+require_once __DIR__ . '/permissions.php';
+
+
 
 // Errori ON in locale
 ini_set('display_errors', '1');

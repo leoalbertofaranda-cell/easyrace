@@ -3,10 +3,14 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../app/includes/bootstrap.php';
 require_once __DIR__ . '/../app/includes/helpers.php';
+require_once __DIR__ . '/../app/includes/audit.php';
 
 require_login();
 
 $u = auth_user();
+[$actor_id, $actor_role] = actor_from_auth($u);
+
+
 $conn = db($config);
 
 $event_id = (int)($_GET['event_id'] ?? 0);
@@ -29,7 +33,24 @@ if (!$event) {
   exit("Evento non trovato.");
 }
 
+
 require_manage_org($conn, (int)$event['organization_id']);
+
+audit_log(
+  $conn,
+  'EXPORT_EVENT_REPORT',
+  'event',
+  (int)$event_id,
+  $actor_id,
+  $actor_role,
+  null,
+  [
+    'event_id'         => (int)$event_id,
+    'organization_id' => (int)($event['organization_id'] ?? 0),
+    'type'             => 'event_report'
+  ]
+);
+
 
 header('Content-Type: text/csv; charset=UTF-8');
 header('Content-Disposition: attachment; filename="event_report_'.$event_id.'.csv"');

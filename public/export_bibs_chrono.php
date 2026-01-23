@@ -3,10 +3,14 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../app/includes/bootstrap.php';
 require_once __DIR__ . '/../app/includes/helpers.php';
+require_once __DIR__ . '/../app/includes/audit.php';
 
 require_login();
 
 $u = auth_user();
+[$actor_id, $actor_role] = actor_from_auth($u);
+
+
 $conn = db($config);
 
 $race_id = (int)($_GET['race_id'] ?? 0);
@@ -15,12 +19,13 @@ if ($race_id <= 0) {
   exit('Race ID mancante');
 }
 
+
 // filtro opzionale divisione
 $division_id = (int)($_GET['division_id'] ?? 0);
 
 // sicurezza: verifica permessi
 $stmt = $conn->prepare("
-  SELECT r.id, e.organization_id
+  SELECT r.id, r.event_id, e.organization_id
   FROM races r
   JOIN events e ON e.id = r.event_id
   WHERE r.id=?
@@ -40,7 +45,27 @@ if (!$row) {
   exit('Gara non trovata');
 }
 
-require_manage_org($conn, (int)$row['organization_id']);
+require_org_permission($conn, (int)$row['organization_id'], 'view_reports');
+
+// AUDIT: log dell'export (prima di qualsiasi output/header CSV)
+audit_log(
+  $conn,
+  'EXPORT_RACE_BIBS_CSV',
+  'race',
+  (int)$race_id,
+  $actor_id,
+  $actor_role,
+  null,
+  [
+    'race_id'          => (int)$race_id,
+    'organization_id' => (int)($row['organization_id'] ?? 0),
+    'event_id'         => (int)($row['event_id'] ?? 0),
+    'division_id'      => (int)$division_id,
+    'filename'         => 'cronometristi_gara_'.$race_id.'.csv',
+    'type'             => 'crono_bibs'
+  ]
+);
+
 
 // intestazioni CSV
 header('Content-Type: text/csv; charset=UTF-8');
@@ -116,7 +141,6 @@ while ($r = $res->fetch_assoc()) {
     $r['club_name']
   ]);
 }
-
 
 $stmt->close();
 fclose($out);

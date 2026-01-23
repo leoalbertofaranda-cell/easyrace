@@ -7,11 +7,16 @@ require_once __DIR__ . '/../app/includes/layout.php';
 require_once __DIR__ . '/../app/includes/categories.php';
 require_once __DIR__ . '/../app/includes/fees.php';
 require_once __DIR__ . '/../app/includes/helpers.php';
+require_once __DIR__ . '/../app/includes/audit.php';
 
 require_login();
 
 $u = auth_user();
 $conn = db($config);
+
+$actor_id   = (int)($u['id'] ?? 0);
+$actor_role = (string)($u['role'] ?? '');
+
 
 /**
  * Fallback escape HTML
@@ -56,8 +61,8 @@ if (!$race) {
   exit("Gara non trovata.");
 }
 
-// Permesso: devi essere membro dell'organizzazione (o superuser)
-require_manage_org($conn, (int)$race['organization_id']);
+// Permesso: gestione gare su questa organizzazione
+require_org_permission($conn, (int)$race['organization_id'], 'manage_races');
 
 $error = '';
 
@@ -85,28 +90,73 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $action = (string)($_POST['action'] ?? '');
   $reg_id = (int)($_POST['reg_id'] ?? 0);
 
+
+// snapshot BEFORE per audit
+$before = null;
+if ($reg_id > 0) {
+  $stmt = $conn->prepare("
+    SELECT status, payment_status, bib_number
+    FROM registrations
+    WHERE id=? AND race_id=?
+    LIMIT 1
+  ");
+  $stmt->bind_param("ii", $reg_id, $race_id);
+  $stmt->execute();
+  $before = $stmt->get_result()->fetch_assoc();
+  $stmt->close();
+
+  if (!$before) {
+    http_response_code(404);
+    exit('Iscrizione non trovata');
+  }
+}
+
+
     // annulla iscrizione (by admin/organizer)
-    if ($reg_id > 0 && $action === 'cancel') {
+if ($reg_id > 0 && $action === 'cancel') {
 
-      $stmt = $conn->prepare("
-        UPDATE registrations
-        SET
-          status='cancelled',
-          status_reason='CANCELLED_BY_ADMIN',
-          payment_status='unpaid',
-          confirmed_at=NULL,
-          paid_total_cents=0,
-          paid_at=NULL
-        WHERE id=? AND race_id=?
-        LIMIT 1
-      ");
-      $stmt->bind_param("ii", $reg_id, $race_id);
-      $stmt->execute();
-      $stmt->close();
+  $stmt = $conn->prepare("
+    UPDATE registrations
+    SET
+      status='cancelled',
+      status_reason='CANCELLED_BY_ADMIN',
+      payment_status='unpaid',
+      confirmed_at=NULL,
+      paid_total_cents=0,
+      paid_at=NULL,
+      bib_number=NULL
+    WHERE id=? AND race_id=?
+    LIMIT 1
+  ");
+  $stmt->bind_param("ii", $reg_id, $race_id);
+  $stmt->execute();
+  $stmt->close();
 
-      header("Location: race.php?id=".$race_id);
-      exit;
-    }
+audit_log(
+  $conn,
+  'REG_CANCEL',
+  'registration',
+  (int)$reg_id,
+  $actor_id,
+  $actor_role,
+  null,
+  [
+    'race_id'          => (int)$race_id,
+    'organization_id' => (int)$race['organization_id'],
+    'before'           => $before,
+    'after'            => [
+      'status'          => 'cancelled',
+      'payment_status'  => 'unpaid'
+    ]
+  ]
+);
+
+
+
+  header("Location: race.php?id=".$race_id);
+  exit;
+}
+
 
 
   // ======================================================
@@ -139,6 +189,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       $stmt->execute();
       $cur = $stmt->get_result()->fetch_assoc();
       $stmt->close();
+
+if ($action === 'confirm') {
+  audit_log($conn, 'REG_CONFIRM', 'registration', $reg_id, (int)$race['organization_id'], [
+    'before' => $before,
+    'after'  => ['status' => 'confirmed']
+  ]);
+} else {
+ audit_log(
+  $conn,
+  'REG_SET_PENDING',
+  'registration',
+  (int)$reg_id,
+  $actor_id,
+  $actor_role,
+  null,
+  [
+    'race_id'          => (int)$race_id,
+    'organization_id' => (int)$race['organization_id'],
+    'before'          => $before,
+    'after'           => ['status' => 'pending']
+  ]
+);
+
+}
+  
 
       if (!$cur || ($cur['status'] ?? '') === 'cancelled') {
         $error = "Iscrizione non valida.";
@@ -196,9 +271,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ");
       }
 
-      $stmt->bind_param("ii", $reg_id, $race_id);
-      $stmt->execute();
-      $stmt->close();
+     $stmt->bind_param("ii", $reg_id, $race_id);
+$stmt->execute();
+$stmt->close();
+
+// dati attore (utente loggato)
+$actor_id   = (int)($u['id'] ?? 0);
+$actor_role = (string)($u['role'] ?? '');
+
+// audit
+if ($action === 'mark_paid') {
+  audit_log(
+    $conn,
+    'REG_MARK_PAID',
+    'registration',
+    (int)$reg_id,
+    $actor_id,
+    $actor_role,
+    null,
+    [
+      'race_id'         => (int)$race_id,
+      'organization_id'=> (int)$race['organization_id'],
+      'before'          => $before,
+      'after'           => ['payment_status' => 'paid']
+    ]
+  );
+} else {
+// attore (una volta sola prima dei log)
+$actor_id   = (int)($u['id'] ?? 0);
+$actor_role = (string)($u['role'] ?? '');
+
+audit_log(
+  $conn,
+  'REG_MARK_UNPAID',
+  'registration',
+  (int)$reg_id,
+  $actor_id,
+  $actor_role,
+  null,
+  [
+    'race_id'          => (int)$race_id,
+    'organization_id' => (int)$race['organization_id'],
+    'before'           => $before,
+    'after'            => ['payment_status' => 'unpaid']
+  ]
+);
+
+}
+
+
 
       header("Location: race.php?id=".$race_id);
       exit;
@@ -330,6 +451,52 @@ if (can_manage()) {
   $stmt->close();
 }
 
+function it_status(string $s): string {
+  return match ($s) {
+    'confirmed' => 'Approvato',
+    'pending'   => 'In valutazione',
+    'cancelled' => 'Annullato',
+    'blocked'   => 'Bloccato',
+    default     => $s,
+  };
+}
+
+
+function it_payment(string $p): string {
+  return match ($p) {
+    'paid'   => 'Pagato',
+    'unpaid' => 'Non pagato',
+    default  => $p,
+  };
+}
+
+
+function badge_status(string $s): string {
+  $label = it_status($s);
+
+  $bg = '#eee'; $fg = '#333'; $bd = '#ccc';
+  if ($s === 'confirmed') { $bg = '#e8fff1'; $fg = '#0a6b2f'; $bd = '#9fe3b6'; }
+  if ($s === 'pending')   { $bg = '#fff7e6'; $fg = '#8a5a00'; $bd = '#ffd18a'; }
+  if ($s === 'cancelled') { $bg = '#ffecec'; $fg = '#b00020'; $bd = '#ffb3b3'; }
+  if ($s === 'blocked')   { $bg = '#f0f0f0'; $fg = '#555';    $bd = '#bbb'; }
+
+  return '<span style="display:inline-block;padding:2px 8px;border:1px solid '.$bd.';border-radius:999px;background:'.$bg.';color:'.$fg.';font-weight:700;font-size:12px;">'
+    . h($label) .
+  '</span>';
+}
+
+function badge_payment(string $p): string {
+  $label = it_payment($p);
+
+  $bg = '#ffecec'; $fg = '#b00020'; $bd = '#ffb3b3';
+  if ($p === 'paid') { $bg = '#e8fff1'; $fg = '#0a6b2f'; $bd = '#9fe3b6'; }
+
+  return '<span style="display:inline-block;padding:2px 8px;border:1px solid '.$bd.';border-radius:999px;background:'.$bg.';color:'.$fg.';font-weight:700;font-size:12px;">'
+    . h($label) .
+  '</span>';
+}
+
+
 $pageTitle = 'Gara: ' . ($race['title'] ?? '');
 page_header($pageTitle);
 ?>
@@ -404,7 +571,7 @@ page_header($pageTitle);
     </form>
   <?php else: ?>
     <p>
-      Stato: <b><?php echo h($myReg['status'] ?? ''); ?></b>
+      Stato: <b><?php echo h(it_status((string)($myReg['status'] ?? ''))); ?></b>
       · dal <?php echo h($myReg['created_at'] ?? ''); ?>
     </p>
     <p>
@@ -445,105 +612,118 @@ page_header($pageTitle);
 </p>
 
 <p>
+  <a href="audit_logs.php?race_id=<?php echo (int)$race_id; ?>">
+    Audit log (gara)
+  </a>
+</p>
+
+<p>
   <a href="bibs.php?race_id=<?php echo (int)$race_id; ?>">
     Assegna pettorali / Startlist cronometristi
   </a>
 </p>
 
-
-  <?php if (!$regs): ?>
-    <p>Nessuna iscrizione.</p>
-  <?php else: ?>
-    <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;">
-      <thead>
+<?php if (!$regs): ?>
+  <p>Nessuna iscrizione.</p>
+<?php else: ?>
+  <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;">
+    <thead>
+      <tr>
+        <th>Nome</th>
+        <th>Email</th>
+        <th>Stato</th>
+        <th>Motivo</th>
+        <th>Categoria</th>
+        <th>Quota</th>
+        <th>Pagato</th>
+        <th>Pagamento</th>
+        <th>Data</th>
+        <th>Azioni</th>
+      </tr>
+    </thead>
+    <tbody>
+      <?php foreach ($regs as $r): ?>
         <tr>
-          <th>Nome</th>
-          <th>Email</th>
-          <th>Stato</th>
-          <th>Motivo</th>
-          <th>Categoria</th>
-          <th>Quota</th>
-          <th>Pagato</th>
-          <th>Pagamento</th>
-          <th>Data</th>
-          <th>Azioni</th>
+          <td><?php echo h($r['full_name'] ?? ''); ?></td>
+          <td><?php echo h($r['email'] ?? ''); ?></td>
+
+          <!-- Stato in IT -->
+          <td><?php echo badge_status((string)($r['status'] ?? '')); ?></td>
+
+          <td><?php echo h($r['status_reason'] ?? '-'); ?></td>
+
+          <td>
+            <?php
+              $cc = (string)($r['category_code'] ?? '');
+              $cl = (string)($r['category_label'] ?? '');
+              echo $cc ? h($cc . ' — ' . $cl) : '-';
+            ?>
+          </td>
+
+          <td>€ <?php echo h(cents_to_eur((int)($r['fee_total_cents'] ?? 0))); ?></td>
+          <td>€ <?php echo h(cents_to_eur((int)($r['paid_total_cents'] ?? 0))); ?></td>
+
+          <!-- Pagamento (stato + data) -->
+          <td>
+            <?php echo badge_payment((string)($r['payment_status'] ?? '')); ?>
+<?php if (($r['payment_status'] ?? '') === 'paid' && !empty($r['paid_at'])): ?>
+  <br><small><?php echo h($r['paid_at']); ?></small>
+<?php endif; ?>
+
+          </td>
+
+          <td><?php echo h($r['created_at'] ?? ''); ?></td>
+
+          <td>
+            <?php if (($r['status'] ?? '') === 'pending'): ?>
+              <form method="post" style="display:inline;">
+                <input type="hidden" name="reg_id" value="<?php echo (int)$r['id']; ?>">
+                <input type="hidden" name="action" value="confirm">
+                <button type="submit">Approva</button>
+              </form>
+            <?php endif; ?>
+
+            <?php if (($r['status'] ?? '') === 'confirmed'): ?>
+              <form method="post" style="display:inline;">
+                <input type="hidden" name="reg_id" value="<?php echo (int)$r['id']; ?>">
+                <input type="hidden" name="action" value="pending">
+                <button type="submit" onclick="return confirm('Rimettere in valutazione questa iscrizione?');">
+                  Metti in valutazione
+                </button>
+              </form>
+            <?php endif; ?>
+
+            <?php if (($r['status'] ?? '') !== 'cancelled'): ?>
+              <form method="post" style="display:inline;" onsubmit="return confirm('Annullare iscrizione?');">
+                <input type="hidden" name="reg_id" value="<?php echo (int)$r['id']; ?>">
+                <input type="hidden" name="action" value="cancel">
+                <button type="submit">Annulla</button>
+              </form>
+            <?php endif; ?>
+
+            <?php if (($r['payment_status'] ?? '') === 'unpaid'): ?>
+              <form method="post" style="display:inline;">
+                <input type="hidden" name="reg_id" value="<?php echo (int)$r['id']; ?>">
+                <input type="hidden" name="action" value="mark_paid">
+                <button type="submit" onclick="return confirm('Confermi: segna come pagato?');">
+                  Segna pagato
+                </button>
+              </form>
+            <?php elseif (($r['payment_status'] ?? '') === 'paid'): ?>
+              <form method="post" style="display:inline;">
+                <input type="hidden" name="reg_id" value="<?php echo (int)$r['id']; ?>">
+                <input type="hidden" name="action" value="mark_unpaid">
+                <button type="submit" onclick="return confirm('Confermi annullamento pagamento?');">
+                  Annulla pagamento
+                </button>
+              </form>
+            <?php endif; ?>
+          </td>
         </tr>
-      </thead>
-      <tbody>
-        <?php foreach ($regs as $r): ?>
-          <tr>
-            <td><?php echo h($r['full_name'] ?? ''); ?></td>
-            <td><?php echo h($r['email'] ?? ''); ?></td>
-            <td><?php echo h($r['status'] ?? ''); ?></td>
-            <td><?php echo h($r['status_reason'] ?? '-'); ?></td>
-            <td>
-              <?php
-                $cc = (string)($r['category_code'] ?? '');
-                $cl = (string)($r['category_label'] ?? '');
-                echo $cc ? h($cc . ' — ' . $cl) : '-';
-              ?>
-            </td>
-
-            <td>€ <?php echo h(cents_to_eur((int)($r['fee_total_cents'] ?? 0))); ?></td>
-            <td>€ <?php echo h(cents_to_eur((int)($r['paid_total_cents'] ?? 0))); ?></td>
-
-            <td>
-              <?php if (($r['payment_status'] ?? '') === 'paid'): ?>
-                <b style="color:green;">Pagato</b>
-                <?php if (!empty($r['paid_at'])): ?>
-                  <br><small><?php echo h($r['paid_at']); ?></small>
-                <?php endif; ?>
-              <?php else: ?>
-                <b style="color:#c00;">Non pagato</b>
-              <?php endif; ?>
-            </td>
-
-            <td><?php echo h($r['created_at'] ?? ''); ?></td>
-
-            <td>
-              <?php if (($r['status'] ?? '') !== 'confirmed'): ?>
-                <form method="post" style="display:inline;">
-                  <input type="hidden" name="reg_id" value="<?php echo (int)$r['id']; ?>">
-                  <input type="hidden" name="action" value="confirm">
-                  <button type="submit">Conferma</button>
-                </form>
-              <?php endif; ?>
-
-              <?php if (($r['status'] ?? '') !== 'pending'): ?>
-                <form method="post" style="display:inline;">
-                  <input type="hidden" name="reg_id" value="<?php echo (int)$r['id']; ?>">
-                  <input type="hidden" name="action" value="pending">
-                  <button type="submit">Pending</button>
-                </form>
-              <?php endif; ?>
-
-              <?php if (($r['status'] ?? '') !== 'cancelled'): ?>
-                <form method="post" style="display:inline;" onsubmit="return confirm('Annullare iscrizione?');">
-                  <input type="hidden" name="reg_id" value="<?php echo (int)$r['id']; ?>">
-                  <input type="hidden" name="action" value="cancel">
-                  <button type="submit">Annulla</button>
-                </form>
-              <?php endif; ?>
-
-              <?php if (($r['payment_status'] ?? '') !== 'paid'): ?>
-                <form method="post" style="display:inline;">
-                  <input type="hidden" name="reg_id" value="<?php echo (int)$r['id']; ?>">
-                  <input type="hidden" name="action" value="mark_paid">
-                  <button type="submit">Segna pagato</button>
-                </form>
-              <?php else: ?>
-                <form method="post" style="display:inline;">
-                  <input type="hidden" name="reg_id" value="<?php echo (int)$r['id']; ?>">
-                  <input type="hidden" name="action" value="mark_unpaid">
-                  <button type="submit">Annulla pagamento</button>
-                </form>
-              <?php endif; ?>
-            </td>
-          </tr>
-        <?php endforeach; ?>
-      </tbody>
-    </table>
-  <?php endif; ?>
+      <?php endforeach; ?>
+    </tbody>
+  </table>
+<?php endif; ?>
 <?php endif; ?>
 
 <?php page_footer(); ?>

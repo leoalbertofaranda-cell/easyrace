@@ -90,3 +90,50 @@ function validate_tax_code(string $cf): bool {
   $check = chr(($sum % 26) + ord('A'));
   return $check === $cf[15];
 }
+
+/**
+ * Audit log
+ * Tabella: audit_logs
+ */
+if (!function_exists('audit_log')) {
+  function audit_log(mysqli $conn, string $action, string $entity_type, int $entity_id, ?int $org_id, array $payload = []): void {
+    $json = json_encode($payload, JSON_UNESCAPED_UNICODE);
+    if ($json === false) {
+      throw new RuntimeException("audit_log: json_encode fallito");
+    }
+
+    $stmt = $conn->prepare("
+      INSERT INTO audit_logs (action, entity_type, entity_id, org_id, payload)
+      VALUES (?, ?, ?, ?, ?)
+    ");
+    if (!$stmt) {
+      throw new RuntimeException("audit_log prepare: " . $conn->error);
+    }
+
+    // org_id può essere NULL
+    $org_id_db = ($org_id !== null && $org_id > 0) ? $org_id : null;
+
+    $stmt->bind_param("ssiis", $action, $entity_type, $entity_id, $org_id_db, $json);
+
+    if (!$stmt->execute()) {
+      $err = $stmt->error ?: $conn->error;
+      $stmt->close();
+      throw new RuntimeException("audit_log execute: " . $err);
+    }
+
+    $stmt->close();
+  }
+}
+
+
+function actor_from_auth(?array $u): array {
+  $actor_id = (int)($u['id'] ?? 0);
+
+  $role = $u['role'] ?? '';
+  if (is_array($role)) {
+    $role = $role['role'] ?? ($role['name'] ?? '');
+  }
+  $actor_role = (string)$role;
+
+  return [$actor_id, $actor_role];
+}

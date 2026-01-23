@@ -3,10 +3,14 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../app/includes/bootstrap.php';
 require_once __DIR__ . '/../app/includes/helpers.php';
+require_once __DIR__ . '/../app/includes/audit.php';
 
 require_login();
 
 $u = auth_user();
+[$actor_id, $actor_role] = actor_from_auth($u);
+
+
 $conn = db($config);
 
 $race_id = (int)($_GET['race_id'] ?? 0);
@@ -49,6 +53,24 @@ $fname = sprintf(
   $day,
   slug((string)($race['title'] ?? 'gara')),
   $race_id
+);
+
+// AUDIT: log dell'export (prima di qualsiasi output/header CSV)
+audit_log(
+  $conn,
+  'EXPORT_RACE_REGS_CSV',
+  'race',
+  (int)$race_id,
+  $actor_id,
+  $actor_role,
+  null,
+  [
+    'race_id'          => (int)$race_id,
+    'organization_id' => (int)$race['organization_id'],
+    'event_id'         => (int)($race['event_id'] ?? 0),
+    'filename'         => (string)$fname,
+    'type'             => 'segreteria'
+  ]
 );
 
 header('Content-Type: text/csv; charset=UTF-8');
