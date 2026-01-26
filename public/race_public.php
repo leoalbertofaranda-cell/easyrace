@@ -654,23 +654,74 @@ page_header($pageTitle);
 $st = (string)($myReg['status'] ?? '');
 $ps = (string)($myReg['payment_status'] ?? '');
 $needsPayInfo = in_array($st, ['pending','confirmed'], true) && $ps !== 'paid';
+
+$payment_mode = (string)($race['payment_mode'] ?? 'manual');
+if (!in_array($payment_mode, ['manual','stripe','both'], true)) $payment_mode = 'manual';
+
+// istruzioni manuali (testo libero + fallback IBAN)
+$instr_raw = trim((string)($race['payment_instructions'] ?? ''));
+
+if ($instr_raw === '') {
+  $iban = trim((string)($race['organizer_iban'] ?? ''));
+  if ($iban !== '') {
+    $race_title = trim((string)($race['title'] ?? ''));
+    $instr_raw = "Bonifico bancario\nIBAN: {$iban}";
+    if ($race_title !== '') {
+      $instr_raw .= "\nCausale: Iscrizione - {$race_title}";
+    }
+  }
+}
+
+$has_manual_info = ($instr_raw !== '');
 ?>
 
-<?php if ($needsPayInfo && !empty($race['payment_instructions'])): ?>
-  <div style="margin-top:10px;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
-    <div style="font-weight:900;margin-bottom:6px;">Come pagare</div>
-    <div style="color:#444;font-size:14px;line-height:1.4;">
-      <?php echo nl2br(h((string)$race['payment_instructions'])); ?>
+<?php if ($needsPayInfo): ?>
+
+  <?php if ($payment_mode === 'manual' || $payment_mode === 'both'): ?>
+    <?php if ($has_manual_info): ?>
+      <div style="margin-top:10px;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
+        <div style="font-weight:900;margin-bottom:6px;">Come pagare</div>
+        <div style="color:#444;font-size:14px;line-height:1.4;">
+          <?= nl2br(h($instr_raw)) ?>
+        </div>
+      </div>
+    <?php else: ?>
+      <div style="margin-top:10px;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
+        <div style="font-weight:900;margin-bottom:6px;">Pagamento richiesto</div>
+        <div style="color:#444;font-size:14px;">
+          Le istruzioni di pagamento non sono state ancora inserite dall’organizzazione.
+        </div>
+      </div>
+    <?php endif; ?>
+  <?php endif; ?>
+
+  <?php if ($payment_mode === 'stripe' || $payment_mode === 'both'): ?>
+    <div style="margin-top:10px;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
+      <div style="font-weight:900;margin-bottom:6px;">Pagamento online</div>
+      <div style="color:#444;font-size:14px;line-height:1.4;">
+        Pagamento con carta (Stripe) previsto, ma non ancora attivo su questa versione.
+      </div>
     </div>
-  </div>
-<?php elseif ($needsPayInfo): ?>
-  <div style="margin-top:10px;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
-    <div style="font-weight:900;margin-bottom:6px;">Pagamento richiesto</div>
-    <div style="color:#444;font-size:14px;">
-      Le istruzioni di pagamento non sono state ancora inserite dall’organizzazione.
-    </div>
-  </div>
+  <?php endif; ?>
+
 <?php endif; ?>
+
+
+<?php
+$payment_mode = (string)($race['payment_mode'] ?? 'manual');
+if (!in_array($payment_mode, ['manual','stripe','both'], true)) $payment_mode = 'manual';
+
+$instr_raw = trim((string)($race['payment_instructions'] ?? ''));
+if ($instr_raw === '') {
+  $iban = trim((string)($race['organizer_iban'] ?? ''));
+  if ($iban !== '') {
+    $race_title = trim((string)($race['title'] ?? ''));
+    $instr_raw = "Bonifico bancario\nIBAN: {$iban}";
+    if ($race_title !== '') $instr_raw .= "\nCausale: Iscrizione - {$race_title}";
+  }
+}
+$has_manual_info = ($instr_raw !== '');
+?>
 
 
 <nav style="margin:10px 0 12px;">
