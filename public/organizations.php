@@ -9,12 +9,19 @@ $u = auth_user();
 $conn = db($config);
 
 $stmt = $conn->prepare("
-  SELECT o.id, o.name, o.city, o.email, o.phone, ou.org_role
+  SELECT 
+    o.id, o.name, o.city, o.email, o.phone, ou.org_role,
+    o.stripe_account_id,
+    o.stripe_onboarding_status,
+    o.stripe_charges_enabled,
+    o.stripe_payouts_enabled,
+    o.stripe_details_submitted
   FROM organization_users ou
   JOIN organizations o ON o.id = ou.organization_id
   WHERE ou.user_id = ?
   ORDER BY o.name ASC
 ");
+
 $stmt->bind_param("i", $u['id']);
 $stmt->execute();
 $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -27,24 +34,51 @@ page_header('Organizzazioni');
   <p>Nessuna organizzazione collegata al tuo account.</p>
 <?php else: ?>
   <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width:100%;">
-    <thead>
-      <tr>
-        <th>Nome</th>
-        <th>Città</th>
-        <th>Email</th>
-        <th>Telefono</th>
-        <th>Ruolo</th>
-      </tr>
-    </thead>
+   <thead>
+  <tr>
+    <th>Nome</th>
+    <th>Città</th>
+    <th>Email</th>
+    <th>Telefono</th>
+    <th>Ruolo</th>
+    <th>Pagamenti</th>
+  </tr>
+</thead>
+
     <tbody>
-      <?php foreach ($rows as $r): ?>
-        <tr>
-          <td><?php echo h($r['name'] ?? ''); ?></td>
-          <td><?php echo h($r['city'] ?? ''); ?></td>
-          <td><?php echo h($r['email'] ?? ''); ?></td>
-          <td><?php echo h($r['phone'] ?? ''); ?></td>
-          <td><?php echo h($r['org_role'] ?? ''); ?></td>
-        </tr>
+      <?php foreach ($rows as $r): 
+$stripe_ready =
+  !empty($r['stripe_account_id']) &&
+  (int)($r['stripe_charges_enabled'] ?? 0) === 1 &&
+  (int)($r['stripe_payouts_enabled'] ?? 0) === 1 &&
+  (int)($r['stripe_details_submitted'] ?? 0) === 1;
+?>
+      <tr>
+  <td><?php echo h($r['name'] ?? ''); ?></td>
+  <td><?php echo h($r['city'] ?? ''); ?></td>
+  <td><?php echo h($r['email'] ?? ''); ?></td>
+  <td><?php echo h($r['phone'] ?? ''); ?></td>
+  <td><?php echo h($r['org_role'] ?? ''); ?></td>
+
+ <td>
+  <span style="display:inline-block;padding:4px 10px;border-radius:999px;
+    border:1px solid #ddd;font-weight:900;font-size:12px;
+    background:<?= $stripe_ready ? '#eaffea' : '#fff6e5' ?>;">
+    <?= $stripe_ready ? 'ATTIVO' : 'NON ATTIVO' ?>
+  </span>
+
+  <?php if (($r['org_role'] ?? '') === 'owner' && !$stripe_ready): ?>
+    <div style="margin-top:6px;">
+      <a href="stripe_onboarding.php?org_id=<?php echo (int)$r['id']; ?>"
+         style="font-size:12px;font-weight:900;text-decoration:none;">
+        Attiva →
+      </a>
+    </div>
+  <?php endif; ?>
+</td>
+
+</tr>
+
       <?php endforeach; ?>
     </tbody>
   </table>
