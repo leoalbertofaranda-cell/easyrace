@@ -9,35 +9,77 @@ $u = auth_user();
 $conn = db($config);
 
 $org_id = (int)($_GET['org_id'] ?? 0);
+
+// 1) Lista org dove l'utente è OWNER
+$stmt = $conn->prepare("
+  SELECT o.id, o.name
+  FROM organization_users ou
+  JOIN organizations o ON o.id = ou.organization_id
+  WHERE ou.user_id = ? AND ou.org_role = 'owner'
+  ORDER BY o.name ASC
+");
+$stmt->bind_param("i", $u['id']);
+$stmt->execute();
+$owner_orgs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+$stmt->close();
+
+if (!$owner_orgs) {
+  header("HTTP/1.1 403 Forbidden");
+  exit("Solo l’owner di un’organizzazione può attivare i pagamenti con carta.");
+}
+
+// 2) Se org_id non passato:
+// - se 1 sola org -> redirect automatico
+// - se più org -> pagina scelta
 if ($org_id <= 0) {
-  header("Location: organizations.php");
+  if (count($owner_orgs) === 1) {
+    $only_id = (int)$owner_orgs[0]['id'];
+    header("Location: stripe_onboarding.php?org_id=" . $only_id);
+    exit;
+  }
+
+  page_header('Attiva pagamenti - Seleziona organizzazione');
+  ?>
+  <section style="margin:12px 0 16px;padding:14px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
+    <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#666;">Pagamenti</div>
+    <div style="font-size:20px;font-weight:900;line-height:1.2;">Seleziona organizzazione</div>
+    <div style="margin-top:6px;color:#555;font-size:13px;">
+      Hai più organizzazioni come owner: scegli quale attivare.
+    </div>
+
+    <div style="margin-top:12px;display:grid;gap:8px;">
+      <?php foreach ($owner_orgs as $o): ?>
+        <a href="stripe_onboarding.php?org_id=<?php echo (int)$o['id']; ?>"
+           style="display:block;padding:10px 12px;border:1px solid #ddd;border-radius:10px;text-decoration:none;background:#fff;">
+          <b><?php echo h((string)($o['name'] ?? '')); ?></b>
+          <span style="color:#777;font-size:12px;"> →</span>
+        </a>
+      <?php endforeach; ?>
+    </div>
+
+    <div style="margin-top:12px;">
+      <a href="organizations.php"
+         style="display:inline-block;padding:8px 12px;border:1px solid #ddd;border-radius:10px;text-decoration:none;">
+        ← Torna a Organizzazioni
+      </a>
+    </div>
+  </section>
+  <?php
+  page_footer();
   exit;
 }
 
-// Verifica: l'utente è collegato a questa org + prendo ruolo
-$stmt = $conn->prepare("
-  SELECT ou.org_role
-  FROM organization_users ou
-  WHERE ou.user_id = ? AND ou.organization_id = ?
-  LIMIT 1
-");
-$stmt->bind_param("ii", $u['id'], $org_id);
-$stmt->execute();
-$link = $stmt->get_result()->fetch_assoc();
-$stmt->close();
-
-if (!$link) {
+// 3) Validazione: org_id deve essere una delle owner_orgs
+$allowed = false;
+foreach ($owner_orgs as $o) {
+  if ((int)$o['id'] === $org_id) { $allowed = true; break; }
+}
+if (!$allowed) {
   header("HTTP/1.1 403 Forbidden");
-  exit("Accesso negato.");
+  exit("Accesso negato (organizzazione non valida per questo account).");
 }
 
-$org_role = (string)($link['org_role'] ?? '');
-if ($org_role !== 'owner') {
-  header("HTTP/1.1 403 Forbidden");
-  exit("Solo l’owner può attivare i pagamenti con carta.");
-}
-
-// Carico dati org (Stripe status)
+// 4) Carico dati org (Stripe status)
 $stmt = $conn->prepare("
   SELECT
     id, name,
@@ -96,7 +138,7 @@ page_header('Attiva pagamenti - ' . ($org['name'] ?? 'Organizzazione'));
   <div style="margin-top:12px;padding:10px;border:1px dashed #ccc;border-radius:10px;background:#fff;">
     <div style="font-weight:900;margin-bottom:6px;">Onboarding (in arrivo)</div>
     <div style="color:#555;font-size:13px;line-height:1.4;">
-      In questa versione non avviamo ancora la procedura Stripe.  
+      In questa versione non avviamo ancora la procedura Stripe.
       Qui metteremo il bottone che crea/collega l’account e apre l’onboarding guidato.
     </div>
 
@@ -105,6 +147,15 @@ page_header('Attiva pagamenti - ' . ($org['name'] ?? 'Organizzazione'));
       Avvia onboarding Stripe (in arrivo)
     </button>
   </div>
+
+  <?php if (count($owner_orgs) > 1): ?>
+    <div style="margin-top:10px;">
+      <a href="stripe_onboarding.php"
+         style="font-size:12px;font-weight:900;text-decoration:none;">
+        Cambia organizzazione
+      </a>
+    </div>
+  <?php endif; ?>
 
   <div style="margin-top:12px;">
     <a href="organizations.php"
