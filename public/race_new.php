@@ -292,6 +292,13 @@ $admin_fee_map_cents = $admin_fee_map_cents ?? [];
     </div>
   </div>
 
+  <div style="margin-top:6px;font-size:13px;color:#555;line-height:1.35;">
+  <strong>Esempio:</strong>
+  se imposti <b>€15,00</b>, l’atleta paga €15,00 + commissioni EasyRace.
+  Tu incassi <b>€15,00 netti</b>.
+</div>
+
+
  <?php if (false): ?>
 
 <h3>Quote iscrizione (opzionali)</h3>

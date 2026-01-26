@@ -149,7 +149,8 @@ $hasDivisions = !empty($raceDivisions);
 $publicRegs = [];
 $stmt = $conn->prepare("
   SELECT
-    COALESCE(ap.first_name, '') AS first_name,
+  COALESCE(r.bib_number, '') AS bib_number,  
+  COALESCE(ap.first_name, '') AS first_name,
     COALESCE(ap.last_name,  '') AS last_name,
     COALESCE(ap.club_name,  '') AS club_name,
     COALESCE(ap.city,       '') AS city
@@ -170,14 +171,16 @@ $myReg = null;
 if (($role ?? '') === 'athlete' && !empty($u['id'])) {
   $stmt = $conn->prepare("
   SELECT
-    id,
-    user_id AS reg_user_id,
-    status, status_reason, payment_status, created_at,
-    fee_tier_label,
-    division_id, division_code, division_label
-  FROM registrations
-  WHERE race_id=? AND user_id=?
-  LIMIT 1
+  id,
+  user_id AS reg_user_id,
+  status, status_reason, payment_status, created_at,
+  fee_total_cents, paid_at,
+  fee_tier_label,
+  division_id, division_code, division_label
+FROM registrations
+WHERE race_id=? AND user_id=?
+LIMIT 1
+
 ");
   $stmt->bind_param("ii", $race_id, $u['id']);
   $stmt->execute();
@@ -617,6 +620,9 @@ page_header($pageTitle);
   ?>
   <div style="margin-top:6px;">
     <div style="font-size:12px;color:#666;">La tua iscrizione</div>
+    <div style="margin:6px 0;font-size:14px;color:#555;">
+  Stato iscrizione:
+</div>
 
     <!-- BADGE ROW -->
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px;">
@@ -700,6 +706,23 @@ $has_manual_info = ($instr_raw !== '');
       <div style="font-weight:900;margin-bottom:6px;">Pagamento online</div>
       <div style="color:#444;font-size:14px;line-height:1.4;">
         Pagamento con carta (Stripe) previsto, ma non ancora attivo su questa versione.
+          <div style="margin-top:10px;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
+    <div style="font-weight:900;margin-bottom:6px;">Pagamento online</div>
+
+    <div style="color:#444;font-size:14px;line-height:1.4;margin-bottom:10px;">
+      Pagamento con carta (Stripe) previsto, ma non ancora attivo su questa versione.
+    </div>
+
+    <button type="button" disabled
+      style="padding:10px 14px;border:1px solid #ddd;border-radius:10px;background:#eee;color:#666;font-weight:800;cursor:not-allowed;">
+      Paga ora
+    </button>
+
+    <div style="margin-top:8px;font-size:12px;color:#777;">
+      (In arrivo: pagamento con carta e ricevuta automatica)
+    </div>
+  </div>
+
       </div>
     </div>
   <?php endif; ?>
@@ -756,7 +779,13 @@ $has_manual_info = ($instr_raw !== '');
 
 */ ?>
 
-<p><small>La conferma dell’iscrizione avviene dopo la verifica del pagamento.</small></p>
+<?php if (
+  !empty($myReg)
+  && in_array(($myReg['status'] ?? ''), ['pending','confirmed'], true)
+  && ($myReg['payment_status'] ?? '') === 'unpaid'
+): ?>
+  <p><small>La conferma dell’iscrizione avviene dopo la verifica del pagamento.</small></p>
+<?php endif; ?>
 
 <?php if (!empty($error)): ?>
   <div style="padding:12px;background:#ffecec;border:1px solid #ffb3b3;margin:12px 0;">
@@ -766,6 +795,11 @@ $has_manual_info = ($instr_raw !== '');
 
 <h2>Iscritti confermati</h2>
 
+<p style="color:#555;margin-top:-6px;">
+  Totale confermati: <b><?php echo (int)count($publicRegs); ?></b>
+</p>
+
+
 <?php $my_uid = (int)($u['id'] ?? 0); ?>
 
 <?php if (!$publicRegs): ?>
@@ -774,10 +808,12 @@ $has_manual_info = ($instr_raw !== '');
   <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;">
     <thead>
       <tr>
-        <th>Nome</th>
-        <th>Cognome</th>
-        <th>Team / Club</th>
-        <th>Città</th>
+     <th>Pettorale</th>
+<th>Cognome</th>
+<th>Nome</th>
+<th>Team / Club</th>
+<th>Città</th>
+
       </tr>
     </thead>
     <tbody>
@@ -786,19 +822,24 @@ $has_manual_info = ($instr_raw !== '');
 
         <tr style="<?php echo $isMe ? 'background:#fafafa;border-left:4px solid #111;' : ''; ?>">
 
-          <td>
-  <?php echo h($r['first_name'] ?? ''); ?>
-  <?php if ($isMe): ?>
-    <span style="margin-left:6px;padding:2px 8px;border-radius:999px;border:1px solid #ddd;font-weight:900;font-size:12px;">
-      Tu
-    </span>
-  <?php endif; ?>
-</td>
+  <td><?php echo h((string)($r['bib_number'] ?? '')); ?></td>
 
-          <td><?php echo h($r['last_name'] ?? ''); ?></td>
-          <td><?php echo h($r['club_name'] ?? ''); ?></td>
-          <td><?php echo h($r['city'] ?? ''); ?></td>
-        </tr>
+  <td><?php echo h((string)($r['last_name'] ?? '')); ?></td>
+
+  <td>
+    <?php echo h((string)($r['first_name'] ?? '')); ?>
+    <?php if ($isMe): ?>
+      <span style="margin-left:6px;padding:2px 8px;border-radius:999px;border:1px solid #ddd;font-weight:900;font-size:12px;">
+        Tu
+      </span>
+    <?php endif; ?>
+  </td>
+
+  <td><?php echo h((string)($r['club_name'] ?? '')); ?></td>
+
+  <td><?php echo h((string)($r['city'] ?? '')); ?></td>
+</tr>
+
       <?php endforeach; ?>
     </tbody>
   </table>
@@ -861,20 +902,71 @@ $has_manual_info = ($instr_raw !== '');
 
     <?php else: ?>
       <p style="margin-top:6px;color:#555;">
-  <?php echo h(it_myreg_help((string)($myReg['status'] ?? ''), (string)($myReg['payment_status'] ?? ''))); ?>
+  <?php echo h(it_myreg_help(
+    (string)($myReg['status'] ?? ''),
+    (string)($myReg['payment_status'] ?? '')
+  )); ?>
 </p>
 
-<?php if (!empty($myReg['division_label'])): ?>
-  <div style="margin-top:4px;font-size:12px;color:#777;">
-    Divisione: <b><?php echo h((string)$myReg['division_label']); ?></b>
+
+
+
+<?php if (!empty($myReg)): ?>
+  <?php
+    $st = (string)($myReg['status'] ?? '');
+    $ps = (string)($myReg['payment_status'] ?? '');
+
+    // Badge styles coerenti
+    $badgeBase = "display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;border:1px solid #ddd;font-weight:900;font-size:12px;line-height:1;background:#111;color:#fff;";
+$badgeSoft = "display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;border:1px solid #ddd;font-weight:800;font-size:12px;line-height:1;background:#fff;color:#555;";
+$badgePaid = "display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;border:1px solid #ddd;font-weight:900;font-size:12px;line-height:1;background:#f2f2f2;color:#111;";
+  ?>
+
+  <div style="margin-top:6px;">
+    <div style="font-size:12px;color:#666;">La tua iscrizione</div>
+
+    <div style="margin:6px 0;font-size:14px;color:#555;">
+      Stato iscrizione:
+    </div>
+
+    <!-- BADGE ROW -->
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px;">
+
+      <!-- Stato -->
+      <span style="<?php echo $badgeBase; ?>">
+        <?php echo h(it_status($st)); ?>
+      </span>
+
+      <!-- Motivo -->
+      <?php if (!empty($myReg['status_reason'] ?? '')): ?>
+        <span style="<?php echo $badgeSoft; ?>">
+          <?php echo h(it_reason((string)$myReg['status_reason'])); ?>
+        </span>
+      <?php endif; ?>
+
+      <!-- Pagamento -->
+      <?php if (!empty($ps)): ?>
+        <span style="<?php echo ($ps === 'paid') ? $badgePaid : $badgeSoft; ?>">
+          <?php echo h(($ps === 'paid') ? 'Pagato' : 'Non pagato'); ?>
+        </span>
+      <?php endif; ?>
+
+    </div>
+
+    <!-- HELP TEXT -->
+    <div style="margin-top:6px;color:#555;font-size:13px;">
+      <?php echo h(it_myreg_help($st, $ps)); ?>
+    </div>
+
+    <!-- Data -->
+    <?php if (!empty($myReg['created_at'] ?? '')): ?>
+      <div style="margin-top:4px;font-size:12px;color:#777;">
+        Registrata il <?php echo h(it_datetime($myReg['created_at'] ?? null)); ?>
+      </div>
+    <?php endif; ?>
   </div>
 <?php endif; ?>
 
-<?php if (!empty($myReg['created_at'] ?? '')): ?>
-  <div style="margin-top:4px;font-size:12px;color:#777;">
-    Registrata il <?php echo h(it_datetime($myReg['created_at'] ?? null)); ?>
-  </div>
-<?php endif; ?>
 
 
 

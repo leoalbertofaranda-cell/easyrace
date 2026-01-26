@@ -2,6 +2,8 @@
 // app/includes/fees.php
 declare(strict_types=1);
 
+$publicRegs = [];
+
 /**
  * Arrotonda ai multipli di $step (in cents).
  * step=50 => arrotonda a 0,50€
@@ -29,32 +31,41 @@ function fee_percent(int $base_cents, int $bp): int {
 
 /**
  * Legge la fee piattaforma (1 riga) da platform_settings.
- * Ritorna array con: fee_type, fee_value_cents, fee_value_bp, round_to_cents, iban
+ * Ritorna: fee_type, fee_value_cents, fee_value_bp, round_to_cents, iban
  */
 function get_platform_settings(mysqli $conn): array {
-  $sql = "SELECT fee_type, fee_value_cents, fee_value_bp, round_to_cents, iban
-          FROM platform_settings
-          ORDER BY id ASC
-          LIMIT 1";
+  $sql = "
+    SELECT
+      fee_type,
+      fee_value_cents,
+      fee_value_bp,
+      round_to_cents,
+      iban
+    FROM platform_settings
+    ORDER BY id ASC
+    LIMIT 1
+  ";
+
   $res = $conn->query($sql);
   $row = $res ? $res->fetch_assoc() : null;
 
+  // fallback sicuro
   if (!$row) {
     return [
-      'fee_type' => 'fixed',
+      'fee_type'        => 'fixed',
       'fee_value_cents' => 0,
-      'fee_value_bp' => null,
-      'round_to_cents' => 50,
-      'iban' => null,
+      'fee_value_bp'    => null,
+      'round_to_cents'  => 50,
+      'iban'            => null,
     ];
   }
 
   return [
-    'fee_type' => (string)$row['fee_type'],
+    'fee_type'        => (string)$row['fee_type'],
     'fee_value_cents' => (int)$row['fee_value_cents'],
-    'fee_value_bp' => ($row['fee_value_bp'] === null ? null : (int)$row['fee_value_bp']),
-    'round_to_cents' => (int)$row['round_to_cents'],
-    'iban' => $row['iban'],
+    'fee_value_bp'    => $row['fee_value_bp'] !== null ? (int)$row['fee_value_bp'] : null,
+    'round_to_cents'  => (int)$row['round_to_cents'],
+    'iban'            => $row['iban'],
   ];
 }
 
@@ -62,19 +73,21 @@ function get_platform_settings(mysqli $conn): array {
  * Legge la fee admin per admin_user_id, se non c'è ritorna 0.
  */
 function get_admin_settings(mysqli $conn, int $admin_user_id): array {
-  $sql = "SELECT fee_type, fee_value_cents, fee_value_bp, round_to_cents, iban
-          FROM admin_settings
-          WHERE admin_user_id=?
-          LIMIT 1";
+  $sql = "
+    SELECT fee_type, fee_value_cents, fee_value_bp, round_to_cents, iban
+    FROM admin_settings
+    WHERE admin_user_id=?
+    LIMIT 1
+  ";
+
   $stmt = $conn->prepare($sql);
   if (!$stmt) {
-    // fallback safe
     return [
-      'fee_type' => 'fixed',
+      'fee_type'        => 'fixed',
       'fee_value_cents' => 0,
-      'fee_value_bp' => null,
-      'round_to_cents' => 50,
-      'iban' => null,
+      'fee_value_bp'    => null,
+      'round_to_cents'  => 50,
+      'iban'            => null,
     ];
   }
 
@@ -85,26 +98,28 @@ function get_admin_settings(mysqli $conn, int $admin_user_id): array {
 
   if (!$row) {
     return [
-      'fee_type' => 'fixed',
+      'fee_type'        => 'fixed',
       'fee_value_cents' => 0,
-      'fee_value_bp' => null,
-      'round_to_cents' => 50,
-      'iban' => null,
+      'fee_value_bp'    => null,
+      'round_to_cents'  => 50,
+      'iban'            => null,
     ];
   }
 
   return [
-    'fee_type' => (string)$row['fee_type'],
+    'fee_type'        => (string)$row['fee_type'],
     'fee_value_cents' => (int)$row['fee_value_cents'],
-    'fee_value_bp' => ($row['fee_value_bp'] === null ? null : (int)$row['fee_value_bp']),
-    'round_to_cents' => (int)$row['round_to_cents'],
-    'iban' => $row['iban'],
+    'fee_value_bp'    => $row['fee_value_bp'] !== null ? (int)$row['fee_value_bp'] : null,
+    'round_to_cents'  => (int)$row['round_to_cents'],
+    'iban'            => $row['iban'],
   ];
 }
 
 /**
- * Calcola fees + totale (tutto in cents).
- * Usa round_to_cents (di default 50).
+ * Calcola fees + totale (tutto in cents) con rounding sul TOTALE.
+ * Ritorna anche rounding_delta_cents (total_rounded - total_raw).
+ *
+ * Nota: la rounding_delta viene assegnata alla platform_fee per chiudere i conti.
  */
 function calc_fees_total(
   int $race_fee_cents,
@@ -115,39 +130,44 @@ function calc_fees_total(
   $round_step = (int)($platform_settings['round_to_cents'] ?? 50);
   if ($round_step <= 0) $round_step = 50;
 
-  // PLATFORM
-  $platform_fee = 0;
+  // PLATFORM (raw)
+  $platform_fee_raw = 0;
   $ptype = (string)($platform_settings['fee_type'] ?? 'fixed');
   if ($ptype === 'percent') {
     $bp = (int)($platform_settings['fee_value_bp'] ?? 0);
-    $platform_fee = fee_percent($race_fee_cents, $bp);
+    $platform_fee_raw = fee_percent($race_fee_cents, $bp);
   } else {
-    $platform_fee = (int)($platform_settings['fee_value_cents'] ?? 0);
+    $platform_fee_raw = (int)($platform_settings['fee_value_cents'] ?? 0);
   }
-  $platform_fee = fee_round($platform_fee, $round_step);
 
-  // ADMIN
-  $admin_fee = 0;
+  // ADMIN (raw)
+  $admin_fee_raw = 0;
   $atype = (string)($admin_settings['fee_type'] ?? 'fixed');
   if ($atype === 'percent') {
     $bp = (int)($admin_settings['fee_value_bp'] ?? 0);
-    $admin_fee = fee_percent($race_fee_cents, $bp);
+    $admin_fee_raw = fee_percent($race_fee_cents, $bp);
   } else {
-    $admin_fee = (int)($admin_settings['fee_value_cents'] ?? 0);
+    $admin_fee_raw = (int)($admin_settings['fee_value_cents'] ?? 0);
   }
-  $admin_fee = fee_round($admin_fee, $round_step);
 
-  $total = $race_fee_cents + $platform_fee + $admin_fee;
+  $total_raw = $race_fee_cents + $platform_fee_raw + $admin_fee_raw;
+
+  $total_rounded  = fee_round($total_raw, $round_step);
+  $rounding_delta = $total_rounded - $total_raw;
+
+  // assegna delta alla piattaforma per chiudere i conti
+  $platform_fee = $platform_fee_raw + $rounding_delta;
+  $admin_fee    = $admin_fee_raw;
 
   return [
-    'race_fee_cents' => $race_fee_cents,
-    'platform_fee_cents' => $platform_fee,
-    'admin_fee_cents' => $admin_fee,
-    'total_cents' => $total,
+    'race_fee_cents'        => $race_fee_cents,
+    'platform_fee_cents'    => $platform_fee,
+    'admin_fee_cents'       => $admin_fee,
+    'total_cents'           => $total_rounded,
+    'total_raw_cents'       => $total_raw,
+    'rounding_delta_cents'  => $rounding_delta,
+    'round_step_cents'      => $round_step,
   ];
-
-
-
 }
 
 /**
@@ -157,9 +177,11 @@ function cents_to_eur(int $cents): string {
   return number_format($cents / 100, 2, ',', '.');
 }
 
-
+/**
+ * Sceglie il tier tariffario e la quota base in base alla data.
+ * Ritorna: [tier_code, tier_label, fee_cents]
+ */
 function race_fee_pick_tier(array $race, ?string $today = null): array {
-  // ritorna: [tier_code, tier_label, fee_cents]
   $today = $today ?: date('Y-m-d');
 
   $early_until = trim((string)($race['fee_early_until'] ?? ''));
@@ -199,38 +221,5 @@ function race_fee_pick_tier(array $race, ?string $today = null): array {
     return ['early', 'Early', $early_cents];
   }
 
-  return ['regular', 'Regular', $regular_cents];
-}
-
-
-/**
- * Determina il tier tariffario in base alla data
- * - early: fino a fee_early_until (inclusa)
- * - regular: dal giorno dopo early_until fino al giorno prima gara
- * - late: giorno della gara
- */
-function fee_tier_for_date(array $race, string $todayYmd): string {
-  $early_until = (string)($race['fee_early_until'] ?? '');
-  $race_day    = substr((string)($race['start_at'] ?? ''), 0, 10); // YYYY-MM-DD
-
-  if ($race_day !== '' && $todayYmd === $race_day) {
-    return 'late';
-  }
-
-  if ($early_until !== '' && $todayYmd <= $early_until) {
-    return 'early';
-  }
-
-  return 'regular';
-}
-
-/**
- * Ritorna la quota in centesimi in base al tier
- */
-function fee_cents_for_tier(array $race, string $tier): int {
-  return match ($tier) {
-    'early'   => (int)($race['fee_early_cents'] ?? 0),
-    'late'    => (int)($race['fee_late_cents'] ?? 0),
-    default   => (int)($race['fee_regular_cents'] ?? 0),
-  };
+  return ['regular', 'Regular', max(0, $regular_cents)];
 }

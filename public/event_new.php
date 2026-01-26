@@ -29,41 +29,45 @@ $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $title = trim((string)($_POST['title'] ?? ''));
   $desc  = trim((string)($_POST['description'] ?? ''));
-  $starts_on = (string)($_POST['starts_on'] ?? '');
-$starts_on = $starts_on !== '' ? $starts_on : null;
 
-$ends_on = (string)($_POST['ends_on'] ?? '');
-$ends_on = $ends_on !== '' ? $ends_on : null;
+  $starts_on = trim((string)($_POST['starts_on'] ?? ''));
+  $starts_on = ($starts_on !== '') ? $starts_on : null;
 
-  $ends_on   = $_POST['ends_on'] ?: null;
-  $status = $_POST['status'] ?? 'draft';
+  $ends_on = trim((string)($_POST['ends_on'] ?? ''));
+  $ends_on = ($ends_on !== '') ? $ends_on : null;
 
-  if ($title === '') $error = "Titolo obbligatorio.";
-  else {
-    $stmt = $conn->prepare("INSERT INTO events (organization_id,title,description,starts_on,ends_on,status) VALUES (?,?,?,?,?,?)");
+  $status = (string)($_POST['status'] ?? 'draft');
+
+  if ($title === '') {
+    $error = "Titolo obbligatorio.";
+  } else {
+    $stmt = $conn->prepare("
+      INSERT INTO events (organization_id, title, description, starts_on, ends_on, status)
+      VALUES (?,?,?,?,?,?)
+    ");
     $stmt->bind_param("isssss", $org_id, $title, $desc, $starts_on, $ends_on, $status);
     $stmt->execute();
     $newId = (int)$conn->insert_id;
     $stmt->close();
 
     audit_log(
-  $conn,
-  'EVENT_CREATE',
-  'event',
-  (int)$event_id,
-  null,
-  [
-    'event_id'         => (int)$event_id,
-    'organization_id'  => (int)($org_id ?? 0),
-    'title'            => (string)($title ?? ''),
-  ]
-);
+      $conn,
+      'EVENT_CREATE',
+      'event',
+      $newId,
+      null,
+      [
+        'event_id'        => $newId,
+        'organization_id' => $org_id,
+        'title'           => $title,
+        'status'          => $status,
+      ]
+    );
 
-
-
-    header("Location: event_detail.php?id=".$newId);
+    header("Location: event_detail.php?id=" . $newId);
     exit;
   }
+
 }
 ?>
 <!doctype html>

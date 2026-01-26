@@ -147,16 +147,15 @@ audit_log(
   'REG_BIB_SET',
   'registration',
   (int)$reg_id,
-  $actor_id,
-  $actor_role,
-  null,
+  (int)($race['organization_id'] ?? 0),
   [
     'race_id'          => (int)$race_id,
-    'organization_id' => (int)($race['organization_id'] ?? 0),
+    'actor_id'         => (int)$actor_id,
+    'actor_role'       => (string)$actor_role,
     'after'            => [
       'bib_number'  => (int)$bib_int,
-      'division_id' => (int)($division_id_db ?? 0)
-    ]
+      'division_id' => (int)($division_id_db ?? 0),
+    ],
   ]
 );
 

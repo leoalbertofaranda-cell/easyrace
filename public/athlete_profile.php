@@ -31,6 +31,7 @@ $email = (string)($u['email'] ?? '');
 
 $success = '';
 $error = '';
+$taxWarn = '';
 
 $form = [
   'first_name' => '',
@@ -120,8 +121,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $form['cap']  = trim((string)($_POST['cap'] ?? ''));
   $form['city'] = trim((string)($_POST['city'] ?? ''));
   $form['tax_code'] = strtoupper(trim((string)($_POST['tax_code'] ?? '')));
-  $form['tax_code'] = strtoupper(trim((string)($_POST['tax_code'] ?? '')));
-  $form['tax_code'] = preg_replace('/\s+/', '', $form['tax_code']);
+   $form['tax_code'] = preg_replace('/\s+/', '', $form['tax_code']);
   
   // ⚠️ warning soft codice fiscale
 $taxWarn = '';
@@ -167,6 +167,18 @@ if ($form['tax_code'] !== '' && !validate_tax_code($form['tax_code'])) {
     }
   }
 
+  // ======================================================
+// Profilo completo? (solo per UI)
+// ======================================================
+$missing = [];
+foreach ($required as $k => $label) {
+  if (trim((string)($form[$k] ?? '')) === '') {
+    $missing[] = $label;
+  }
+}
+$profile_complete = (count($missing) === 0);
+
+  
   if (!$error) {
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $form['birth_date'])) {
       $error = "Data di nascita non valida (usa YYYY-MM-DD).";
@@ -374,9 +386,33 @@ if (!$stmt) {
 <div class="container" style="max-width: 860px; margin: 24px auto; padding: 0 12px;">
   <h1>Profilo Atleta</h1>
 
+  <?php if ($profile_complete): ?>
+  <div class="alert alert-success">
+    Profilo completo: puoi iscriverti alle gare.
+  </div>
+<?php else: ?>
+  <div class="alert alert-warning">
+    <strong>Profilo incompleto:</strong> completa i campi obbligatori per poterti iscrivere.
+    <div class="small" style="margin-top:6px;">
+      Mancano: <?php echo h(implode(', ', $missing)); ?>
+    </div>
+  </div>
+<?php endif; ?>
+
+
+  <div style="margin:8px 0 14px; display:flex; gap:10px; flex-wrap:wrap;">
+  <a class="btn btn-outline-secondary btn-sm" href="dashboard.php">← Dashboard</a>
+  <a class="btn btn-outline-secondary btn-sm" href="my_registrations.php">Le mie iscrizioni</a>
+</div>
+
   <?php if ($error): ?>
     <div class="alert alert-danger"><?=h($error)?></div>
   <?php endif; ?>
+
+  <?php if (!empty($taxWarn)): ?>
+  <div class="alert alert-warning"><?=h($taxWarn)?></div>
+<?php endif; ?>
+
 
   <?php if ($success): ?>
     <div class="alert alert-success"><?=h($success)?></div>
@@ -384,6 +420,11 @@ if (!$stmt) {
 
   <form method="post" enctype="multipart/form-data">
     <h3>Dati obbligatori</h3>
+
+    <div style="padding:14px;border:1px solid #ddd;border-radius:12px;margin:10px 0 16px;">
+  <div style="color:#555;font-size:14px;margin-bottom:10px;">
+    I campi con * sono necessari per iscriversi alle gare.
+  </div>
 
     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
       <div>
@@ -395,11 +436,10 @@ if (!$stmt) {
         <label>Cognome *</label>
         <input class="form-control" name="last_name" value="<?=h((string)$form['last_name'])?>" required>
       </div>
+</div>
+      <label>Data di nascita *</label>
+<input type="date" class="form-control" name="birth_date" value="<?=h((string)$form['birth_date'])?>" required>
 
-      <div>
-        <label>Data di nascita * (YYYY-MM-DD)</label>
-        <input class="form-control" name="birth_date" value="<?=h((string)$form['birth_date'])?>" placeholder="2008-05-14" required>
-      </div>
 
       <div>
         <label>Sesso *</label>
@@ -464,10 +504,9 @@ if (!$stmt) {
         <input class="form-control" name="phone_mobile" value="<?=h((string)$form['phone_mobile'])?>" required>
       </div>
 
-      <div>
-        <label>Data certificato medico * (YYYY-MM-DD)</label>
-        <input class="form-control" name="medical_cert_date" value="<?=h((string)$form['medical_cert_date'])?>" placeholder="2025-09-20" required>
-      </div>
+      <label>Data certificato medico *</label>
+<input type="date" class="form-control" name="medical_cert_date" value="<?=h((string)$form['medical_cert_date'])?>" required>
+
 
       <div>
         <label>Tipo certificato *</label>
@@ -479,6 +518,12 @@ if (!$stmt) {
     </div>
 
     <h3 style="margin-top:18px;">Dati facoltativi</h3>
+
+    <div style="padding:14px;border:1px solid #ddd;border-radius:12px;margin:10px 0 16px;background:#fafafa;">
+  <div style="color:#555;font-size:14px;margin-bottom:10px;">
+    Questi dati aiutano l’organizzazione, ma non bloccano l’iscrizione.
+  </div>
+
 
     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
       <div>
@@ -509,6 +554,13 @@ if (!$stmt) {
         <?php endif; ?>
       </div>
     </div>
+    <?php if (!empty($existing['medical_cert_valid_until'])): ?>
+  <div class="small text-muted">
+    Valido fino al: <?=h((string)$existing['medical_cert_valid_until'])?>
+  </div>
+  </div>
+<?php endif; ?>
+
 
     <h3 style="margin-top:18px;">Consensi</h3>
 
@@ -529,13 +581,24 @@ if (!$stmt) {
       </label>
     </div>
 
-    <div style="margin-top:18px;">
-      <button class="btn btn-primary" type="submit">Salva profilo</button>
-    </div>
+  <div style="height:72px;"></div> <!-- spacer per la barra sticky -->
 
-    <p style="margin-top:12px;" class="small text-muted">
-      Nota: la validità certificato viene calcolata automaticamente come data certificato + 365 giorni.
-    </p>
+<div style="
+  position:sticky;
+  bottom:0;
+  background:#fff;
+  border-top:1px solid #ddd;
+  padding:12px 0;
+  margin-top:18px;
+">
+  <div style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;">
+    <div style="color:#666;font-size:12px;">
+      La validità certificato viene calcolata automaticamente (+365 giorni).
+    </div>
+    <button class="btn btn-primary" type="submit">Salva profilo</button>
+  </div>
+</div>
+
   </form>
 </div>
 

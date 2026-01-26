@@ -118,8 +118,11 @@ if (!$stmt) {
   exit('Errore DB (prepare export)');
 }
 
-if ($division_id > 0) $stmt->bind_param("ii", $race_id, $division_id);
-else $stmt->bind_param("i", $race_id);
+if ($division_id > 0) {
+  $stmt->bind_param("ii", $race_id, $division_id);
+} else {
+  $stmt->bind_param("i", $race_id);
+}
 
 $stmt->execute();
 $res = $stmt->get_result();
@@ -140,6 +143,7 @@ while ($r = $res->fetch_assoc()) {
     $r['club_name']
   ]);
 }
+
 
 $stmt->close();
 fclose($out);

@@ -44,6 +44,7 @@ function page_header(string $title = 'EasyRace'): void {
     // GESTIONE: admin / organizer / superuser
     } elseif (in_array($role, ['superuser','admin','organizer'], true)) {
       $items[] = ['dashboard.php', 'Dashboard'];
+      $items[] = ['organizer_profile.php', 'Profilo organizzatore'];
       $items[] = ['events.php', 'Eventi (gestione)'];
       $items[] = ['organizations.php', 'Organizzazioni'];
       $items[] = ['event_new.php', '+ Evento'];
