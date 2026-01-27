@@ -44,45 +44,67 @@ page_header($pageTitle);
 
 <p>
   <b>Periodo:</b>
-  <?php echo h($event['starts_on'] ?? '-'); ?>
+  <?php echo h(it_date($event['starts_on'] ?? '')); ?>
   →
-  <?php echo h($event['ends_on'] ?? '-'); ?>
-  · <b>Stato:</b> <?php echo h($event['status'] ?? ''); ?>
+  <?php echo h(it_date($event['ends_on'] ?? '')); ?>
+  · <b>Stato:</b> <?php echo h(label_status($event['status'] ?? '')); ?>
 </p>
+
 
 <?php if (!empty($event['description'])): ?>
   <p><?php echo nl2br(h($event['description'])); ?></p>
 <?php endif; ?>
 
-<p>
-  <a href="export_event_report.php?event_id=<?php echo (int)$event['id']; ?>">
-    Scarica CSV rendicontazione EVENTO (solo pagati)
-  </a>
-</p>
+<?php
+  $u = auth_user();
+  $role = (string)($u['role'] ?? '');
+  $can_view_internal_reports = in_array($role, ['superuser','admin','procacciatore'], true);
+?>
+
+<?php if ($can_view_internal_reports): ?>
+  <p>
+    <a href="export_event_report.php?event_id=<?php echo (int)$event['id']; ?>">
+      Scarica CSV rendicontazione EVENTO (solo pagati)
+    </a>
+  </p>
+<?php endif; ?>
 
 
 <h2 style="margin-top:18px;">Gare / Tappe</h2>
 
 <?php if (!$races): ?>
-  <p>Nessuna gara inserita.</p>
+  <p>Nessuna gara presente.</p>
 <?php else: ?>
   <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;">
     <thead>
-      <tr><th>Titolo</th><th>Luogo</th><th>Data/Ora</th><th>Disciplina</th><th>Stato</th><th></th></tr>
+      <tr>
+        <th>Titolo</th>
+        <th>Luogo</th>
+        <th>Data e ora</th>
+        <th>Disciplina</th>
+        <th>Stato gara</th>
+        <th></th>
+      </tr>
     </thead>
     <tbody>
       <?php foreach ($races as $r): ?>
         <tr>
           <td><?php echo h($r['title'] ?? ''); ?></td>
           <td><?php echo h($r['location'] ?? ''); ?></td>
-          <td><?php echo h($r['start_at'] ?? ''); ?></td>
-          <td><?php echo h($r['discipline'] ?? ''); ?></td>
-          <td><?php echo h($r['status'] ?? ''); ?></td>
-          <td><a href="race.php?id=<?php echo (int)$r['id']; ?>">Apri</a></td>
+     <td><?php echo h(it_datetime($r['start_at'] ?? '')); ?></td>
+
+
+          <td><?php echo h(label_discipline($r['discipline'] ?? '')); ?></td>
+          <td><?php echo h(label_status($r['status'] ?? '')); ?></td>
+
+          <td>
+            <a href="race.php?id=<?php echo (int)$r['id']; ?>">Gestisci</a>
+          </td>
         </tr>
       <?php endforeach; ?>
     </tbody>
   </table>
 <?php endif; ?>
+
 
 <?php page_footer(); ?>

@@ -41,8 +41,15 @@ function page_header(string $title = 'EasyRace'): void {
       $items[] = ['athlete_profile.php', 'Profilo atleta'];
       $items[] = ['logout.php', 'Esci'];
 
-    // GESTIONE: admin / organizer / superuser
-    } elseif (in_array($role, ['superuser','admin','organizer'], true)) {
+      // GESTIONE: organizer (pulito)
+    } elseif ($role === 'organizer') {
+      $items[] = ['dashboard.php', 'Dashboard'];
+      $items[] = ['organizer_profile.php', 'Profilo organizzatore'];
+      $items[] = ['events.php', 'Eventi (gestione)'];
+      $items[] = ['logout.php', 'Esci'];
+
+    // GESTIONE: piattaforma (superuser/admin/procacciatore)
+    } elseif (in_array($role, ['superuser','admin','procacciatore'], true)) {
       $items[] = ['dashboard.php', 'Dashboard'];
       $items[] = ['organizer_profile.php', 'Profilo organizzatore'];
       $items[] = ['events.php', 'Eventi (gestione)'];
@@ -57,9 +64,6 @@ function page_header(string $title = 'EasyRace'): void {
 
       $items[] = ['logout.php', 'Esci'];
 
-    // fallback (se un giorno aggiungi ruoli)
-    } else {
-      $items[] = ['logout.php', 'Esci'];
     }
   }
 

@@ -1,19 +1,12 @@
 <?php
-// public/calendar.php (PUBBLICO)
 declare(strict_types=1);
 
 require_once __DIR__ . '/../app/includes/bootstrap.php';
+require_once __DIR__ . '/../app/includes/helpers.php';
 require_once __DIR__ . '/../app/includes/layout.php';
 
+
 $conn = db($config);
-
-
-function it_date(?string $d): string {
-  if (!$d) return '-';
-  $ts = strtotime($d);
-  if (!$ts) return $d;
-  return date('d/m/Y', $ts);
-}
 
 function badge_regs(string $s): string {
   // semplice: testo (niente CSS avanzato)
@@ -87,7 +80,6 @@ foreach ($events_view as $e) {
   }
 }
 
-
 page_header('Calendario eventi');
 ?>
 
@@ -117,28 +109,36 @@ page_header('Calendario eventi');
 </section>
 
 <form method="get" style="margin:0 0 12px;">
-  <label style="display:inline-flex;gap:8px;align-items:center;border:1px solid #ddd;border-radius:10px;padding:8px 10px;">
-    <input type="checkbox"
-       name="open"
-       value="1"
-       onchange="this.form.submit()"
-       <?php echo $filter_open ? 'checked' : ''; ?>>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
 
-    <span style="font-weight:800;">Solo iscrizioni aperte</span>
-  </label>
+    <label style="display:inline-flex;gap:8px;align-items:center;border:1px solid #ddd;border-radius:10px;padding:8px 10px;">
+      <input type="checkbox"
+        name="open"
+        value="1"
+        onchange="this.form.submit()"
+        <?php echo $filter_open ? 'checked' : ''; ?>>
+      <span style="font-weight:800;">Solo iscrizioni aperte</span>
+    </label>
 
-  <div style="margin-top:8px;">
-  <label style="display:inline-flex;gap:8px;align-items:center;border:1px solid #ddd;border-radius:10px;padding:8px 10px;">
-    <input type="checkbox" name="past" value="1" onchange="this.form.submit()" <?php echo $show_past ? 'checked' : ''; ?>>
-    <span style="font-weight:800;">Mostra anche passati</span>
-  </label>
-</div>
+    <label style="display:inline-flex;gap:8px;align-items:center;border:1px solid #ddd;border-radius:10px;padding:8px 10px;">
+      <input type="checkbox"
+        name="past"
+        value="1"
+        onchange="this.form.submit()"
+        <?php echo $show_past ? 'checked' : ''; ?>>
+      <span style="font-weight:800;">Mostra anche passati</span>
+    </label>
 
+    <?php if ($filter_open || $show_past): ?>
+      <a href="calendar.php"
+         style="display:inline-flex;align-items:center;gap:8px;border:1px solid #ddd;border-radius:10px;padding:8px 10px;color:#555;text-decoration:none;">
+        <span style="font-weight:800;">Azzera filtri</span>
+      </a>
+    <?php endif; ?>
 
-  <?php if ($filter_open): ?>
-    <a href="calendar.php" style="margin-left:10px;color:#555;text-decoration:none;">Reset</a>
-  <?php endif; ?>
+  </div>
 </form>
+
 
 <?php if (!$events_view): ?>
 
@@ -162,7 +162,13 @@ page_header('Calendario eventi');
               <div style="margin-top:6px;color:#444;">
                 <span style="font-weight:700;">Organizzazione:</span> <?php echo h($e['org_name'] ?? ''); ?><br>
                 <span style="font-weight:700;">Periodo:</span>
-                <?php echo h(it_date($e['starts_on'] ?? null)); ?> → <?php echo h(it_date($e['ends_on'] ?? null)); ?>
+                <?php
+  $s1 = h(it_date($e['starts_on'] ?? null));
+  $s2 = h(it_date($e['ends_on'] ?? null));
+  echo $s1;
+  if ($s2 !== '') echo " → " . $s2;
+?>
+
               </div>
             </div>
 

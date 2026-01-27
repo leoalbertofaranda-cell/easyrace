@@ -14,7 +14,11 @@ require_login();
 $u = auth_user();
 if (!$u) { header("Location: login.php"); exit; }
 
+$role = (string)($u['role'] ?? '');
+$can_view_internal_reports = in_array($role, ['superuser','admin','procacciatore'], true);
+
 $conn = db($config);
+
 
 /**
  * Snapshot DB di una registration (per before/after audit)
@@ -506,9 +510,10 @@ page_header($pageTitle);
   <b>Organizzazione:</b> <?php echo h($race['org_name'] ?? ''); ?><br>
   <b>Evento:</b> <?php echo h($race['event_title'] ?? ''); ?><br>
   <b>Luogo:</b> <?php echo h($race['location'] ?? '-'); ?><br>
-  <b>Data/Ora:</b> <?php echo h($race['start_at'] ?? '-'); ?><br>
-  <b>Disciplina:</b> <?php echo h($race['discipline'] ?? '-'); ?><br>
-  <b>Stato gara:</b> <?php echo h($race['status'] ?? '-'); ?>
+    <b>Data/Ora:</b> <?php echo h(it_datetime($race['start_at'] ?? '')); ?><br>
+  <b>Disciplina:</b> <?php echo h(label_discipline($race['discipline'] ?? '')); ?><br>
+  <b>Stato gara:</b> <?php echo h(label_status($race['status'] ?? '')); ?>
+
 </p>
 
 <div style="margin:10px 0 16px;">
@@ -542,8 +547,7 @@ page_header($pageTitle);
     <?php endif; ?>
   </div>
 <?php endif; ?>
-
-<?php if (can_manage()): ?>
+<?php if ($can_view_internal_reports): ?>
   <div style="margin:12px 0; padding:12px; border:1px solid #ddd; border-radius:12px;">
     <b>Rendicontazione (solo pagati)</b><br>
     Iscritti pagati: <b><?php echo (int)$kpi['paid_count']; ?></b><br>
@@ -554,6 +558,7 @@ page_header($pageTitle);
     Arrotondamenti: <b>€ <?php echo h(cents_to_eur((int)$kpi['rounding_total_cents'])); ?></b>
   </div>
 <?php endif; ?>
+
 
 <?php if (is_athlete()): ?>
   <h2>La tua iscrizione</h2>
@@ -594,11 +599,14 @@ page_header($pageTitle);
 <?php if (can_manage()): ?>
   <h2>Iscritti</h2>
 
+ <?php if ($can_view_internal_reports): ?>
   <p>
     <a href="export_race_report.php?race_id=<?php echo (int)$race_id; ?>">
       Scarica CSV rendicontazione (solo pagati)
     </a>
   </p>
+<?php endif; ?>
+
 
   <p>
     <a href="export_race_regs.php?race_id=<?php echo (int)$race_id; ?>">
@@ -657,11 +665,12 @@ page_header($pageTitle);
             <td>
               <?php echo badge_payment((string)($r['payment_status'] ?? '')); ?>
               <?php if (($r['payment_status'] ?? '') === 'paid' && !empty($r['paid_at'])): ?>
-                <br><small><?php echo h($r['paid_at']); ?></small>
+                <br><small><?php echo h(it_datetime($r['paid_at'] ?? '')); ?></small>
               <?php endif; ?>
             </td>
 
-            <td><?php echo h($r['created_at'] ?? ''); ?></td>
+            <td><?php echo h(it_datetime($r['created_at'] ?? '')); ?></td>
+
 
             <td>
               <?php if (($r['status'] ?? '') === 'pending'): ?>

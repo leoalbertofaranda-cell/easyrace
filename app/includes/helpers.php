@@ -148,3 +148,48 @@ if (!function_exists('eur_to_cents')) {
     return (int) round(((float)$v) * 100);
   }
 }
+
+
+function it_datetime(?string $s): string {
+  $s = trim((string)$s);
+  if ($s === '') return '';
+  $ts = strtotime($s);
+  if ($ts === false) return $s;
+  return date('d/m/Y H:i', $ts);
+}
+
+function it_date(?string $s): string {
+  $s = trim((string)$s);
+  if ($s === '') return '';
+  $ts = strtotime($s);
+  if ($ts === false) return $s;
+  return date('d/m/Y', $ts);
+}
+
+function it_date_range(?string $from, ?string $to): string {
+  $a = it_date($from);
+  $b = it_date($to);
+  if ($a && $b) return $a . ' → ' . $b;
+  return $a ?: ($b ?: '');
+}
+
+function label_discipline(?string $s): string {
+  $s = strtolower(trim((string)$s));
+  return match ($s) {
+    'cycling' => 'Ciclismo',
+    'running' => 'Corsa',
+    'swimming' => 'Nuoto',
+    default => ($s !== '' ? $s : ''),
+  };
+}
+
+function label_status(?string $s): string {
+  $s = strtolower(trim((string)$s));
+  return match ($s) {
+    'open' => 'Aperta',
+    'closed' => 'Chiusa',
+    'draft' => 'Bozza',
+    'published' => 'Pubblicato',
+    default => ($s !== '' ? $s : ''),
+  };
+}

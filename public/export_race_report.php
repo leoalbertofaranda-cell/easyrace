@@ -8,10 +8,17 @@ require_once __DIR__ . '/../app/includes/audit.php';
 require_login();
 
 $u = auth_user();
+$role = (string)($u['role'] ?? '');
+
+// DEMO: report interno (con breakdown piattaforma/admin) -> SOLO RUOLI INTERNI
+if (!in_array($role, ['superuser','admin','procacciatore'], true)) {
+  http_response_code(403);
+  exit('Forbidden');
+}
+
 [$actor_id, $actor_role] = actor_from_auth($u);
-
-
 $conn = db($config);
+
 
 $race_id = (int)($_GET['race_id'] ?? 0);
 if ($race_id <= 0) { header("Location: events.php"); exit; }
