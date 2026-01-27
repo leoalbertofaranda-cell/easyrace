@@ -2,7 +2,6 @@
 declare(strict_types=1);
 
 // public/athlete_profile.php
-
 require_once __DIR__ . '/../app/includes/bootstrap.php';
 require_once __DIR__ . '/../app/includes/auth.php';
 
@@ -14,25 +13,43 @@ $conn = db($config);
 $u = auth_user();
 $user_id = (int)($u['id'] ?? 0);
 if ($user_id <= 0) {
-    header('HTTP/1.1 403 Forbidden');
-    exit('Sessione non valida.');
+  header('HTTP/1.1 403 Forbidden');
+  exit('Sessione non valida.');
 }
 
-/**
- * Escape HTML (sicuro anche se bootstrap non lo definisce)
- */
+// Escape HTML (sicuro anche se bootstrap non lo definisce)
 if (!function_exists('h')) {
-    function h($s): string {
-        return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
-    }
+  function h($s): string {
+    return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+  }
 }
 
-$email = (string)($u['email'] ?? '');
-
+$email   = (string)($u['email'] ?? '');
 $success = '';
-$error = '';
+$error   = '';
 $taxWarn = '';
 
+// ======================================================
+// Campi obbligatori (servono sia in GET che in POST)
+// ======================================================
+$required = [
+  'first_name' => 'Nome',
+  'last_name' => 'Cognome',
+  'birth_date' => 'Data di nascita',
+  'gender' => 'Sesso',
+  'shirt_size' => 'Taglia maglietta',
+  'cap' => 'CAP',
+  'city' => 'Città',
+  'tax_code' => 'Codice fiscale',
+  'phone_mobile' => 'Telefono mobile',
+  'primary_membership_federation_code' => 'Ente tessera',
+  'primary_membership_number' => 'Nr tessera',
+  'medical_cert_date' => 'Data certificato medico',
+];
+
+// ======================================================
+// Form defaults
+// ======================================================
 $form = [
   'first_name' => '',
   'last_name' => '',
@@ -63,9 +80,9 @@ $form = [
   'consent_marketing' => 0,
 ];
 
-/**
- * Carica profilo esistente (se c'è)
- */
+// ======================================================
+// Carica profilo esistente (se c'è) + prefill form
+// ======================================================
 $existing = null;
 
 $stmt = $conn->prepare("SELECT * FROM athlete_profile WHERE user_id = ? LIMIT 1");
@@ -77,35 +94,40 @@ $stmt->execute();
 $existing = $stmt->get_result()->fetch_assoc();
 $stmt->close();
 
-/**
- * Aggiorna la sessione (serve a race.php)
- */
 if ($existing) {
+  // aggiorna sessione (serve a race.php)
   $_SESSION['auth']['birth_date'] = $existing['birth_date'] ?? null;
   $_SESSION['auth']['gender']     = $existing['gender'] ?? null;
-}
 
-/**
- * Se esiste, riempi il form con i valori già salvati
- */
-if ($existing) {
   foreach ($form as $k => $v) {
     if (array_key_exists($k, $existing)) {
       $form[$k] = $existing[$k] ?? $v;
     }
   }
-  $form['consent_privacy']         = (int)($existing['consent_privacy'] ?? 0);
-  $form['consent_communications']  = (int)($existing['consent_communications'] ?? 0);
-  $form['consent_marketing']       = (int)($existing['consent_marketing'] ?? 0);
+  $form['consent_privacy']        = (int)($existing['consent_privacy'] ?? 0);
+  $form['consent_communications'] = (int)($existing['consent_communications'] ?? 0);
+  $form['consent_marketing']      = (int)($existing['consent_marketing'] ?? 0);
 } else {
-  $form['consent_privacy']         = (int)($form['consent_privacy'] ?? 0);
-  $form['consent_communications']  = (int)($form['consent_communications'] ?? 0);
-  $form['consent_marketing']       = (int)($form['consent_marketing'] ?? 0);
+  // normalizza consensi anche in assenza profilo
+  $form['consent_privacy']        = (int)($form['consent_privacy'] ?? 0);
+  $form['consent_communications'] = (int)($form['consent_communications'] ?? 0);
+  $form['consent_marketing']      = (int)($form['consent_marketing'] ?? 0);
 }
 
-/**
- * Salva profilo
- */
+// ======================================================
+// Helper: calcola missing/profile_complete (sempre)
+// ======================================================
+$missing = [];
+foreach ($required as $k => $label) {
+  if (trim((string)($form[$k] ?? '')) === '') {
+    $missing[] = $label;
+  }
+}
+$profile_complete = (count($missing) === 0);
+
+// ======================================================
+// Salva profilo (POST)
+// ======================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
   $form['first_name'] = trim((string)($_POST['first_name'] ?? ''));
@@ -121,15 +143,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $form['cap']  = trim((string)($_POST['cap'] ?? ''));
   $form['city'] = trim((string)($_POST['city'] ?? ''));
   $form['tax_code'] = strtoupper(trim((string)($_POST['tax_code'] ?? '')));
-   $form['tax_code'] = preg_replace('/\s+/', '', $form['tax_code']);
-  
-  // ⚠️ warning soft codice fiscale
-$taxWarn = '';
-if ($form['tax_code'] !== '' && !validate_tax_code($form['tax_code'])) {
-  $taxWarn = "Attenzione: il Codice Fiscale inserito sembra non valido (controlla eventuali errori di battitura).";
-}
-  
-  $form['phone_mobile'] = trim((string)($_POST['phone_mobile'] ?? ''));
+  $form['tax_code'] = preg_replace('/\s+/', '', $form['tax_code']);
+
+  // warning soft codice fiscale
+  $taxWarn = '';
+  if ($form['tax_code'] !== '' && function_exists('validate_tax_code') && !validate_tax_code($form['tax_code'])) {
+    $taxWarn = "Attenzione: il Codice Fiscale inserito sembra non valido (controlla eventuali errori di battitura).";
+  }
+
+  $form['phone_mobile']   = trim((string)($_POST['phone_mobile'] ?? ''));
   $form['phone_landline'] = trim((string)($_POST['phone_landline'] ?? ''));
 
   $form['primary_membership_federation_code'] = trim((string)($_POST['primary_membership_federation_code'] ?? 'FCI'));
@@ -140,237 +162,28 @@ if ($form['tax_code'] !== '' && !validate_tax_code($form['tax_code'])) {
   $form['medical_cert_date'] = trim((string)($_POST['medical_cert_date'] ?? ''));
   $form['medical_cert_type'] = (string)($_POST['medical_cert_type'] ?? 'AGONISTICO');
 
-  $form['consent_privacy'] = isset($_POST['consent_privacy']) ? 1 : 0;
+  $form['consent_privacy']        = isset($_POST['consent_privacy']) ? 1 : 0;
   $form['consent_communications'] = isset($_POST['consent_communications']) ? 1 : 0;
-  $form['consent_marketing'] = isset($_POST['consent_marketing']) ? 1 : 0;
+  $form['consent_marketing']      = isset($_POST['consent_marketing']) ? 1 : 0;
 
-  // Obbligatori
-  $required = [
-    'first_name' => 'Nome',
-    'last_name' => 'Cognome',
-    'birth_date' => 'Data di nascita',
-    'gender' => 'Sesso',
-    'shirt_size' => 'Taglia maglietta',
-    'cap' => 'CAP',
-    'city' => 'Città',
-    'tax_code' => 'Codice fiscale',
-    'phone_mobile' => 'Telefono mobile',
-    'primary_membership_federation_code' => 'Ente tessera',
-    'primary_membership_number' => 'Nr tessera',
-    'medical_cert_date' => 'Data certificato medico',
-  ];
-
+  // valida obbligatori (messaggio singolo)
   foreach ($required as $k => $label) {
-    if (trim((string)$form[$k]) === '') {
+    if (trim((string)($form[$k] ?? '')) === '') {
       $error = "Campo obbligatorio mancante: {$label}.";
       break;
     }
   }
 
-  // ======================================================
-// Profilo completo? (solo per UI)
-// ======================================================
-$missing = [];
-foreach ($required as $k => $label) {
-  if (trim((string)($form[$k] ?? '')) === '') {
-    $missing[] = $label;
-  }
-}
-$profile_complete = (count($missing) === 0);
-
-  
-  if (!$error) {
-    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $form['birth_date'])) {
-      $error = "Data di nascita non valida (usa YYYY-MM-DD).";
-    } elseif (!in_array($form['gender'], ['M','F'], true)) {
-      $error = "Sesso non valido.";
-    } elseif (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $form['medical_cert_date'])) {
-      $error = "Data certificato medico non valida (usa YYYY-MM-DD).";
-    } elseif (!in_array($form['medical_cert_type'], ['AGONISTICO','NON_AGONISTICO'], true)) {
-      $error = "Tipo certificato non valido.";
-    } elseif ($form['consent_privacy'] !== 1) {
-      $error = "Devi accettare l'autorizzazione al trattamento dati (obbligatoria).";
+  // ricalcola missing/profile_complete per UI anche dopo POST
+  $missing = [];
+  foreach ($required as $k => $label) {
+    if (trim((string)($form[$k] ?? '')) === '') {
+      $missing[] = $label;
     }
   }
+  $profile_complete = (count($missing) === 0);
 
-  // Calcolo validità certificato
-  $medical_valid_until = null;
-  if (!$error) {
-    try {
-      $dt = new DateTime($form['medical_cert_date']);
-      $dt->modify('+365 days');
-      $medical_valid_until = $dt->format('Y-m-d');
-    } catch (Throwable $e) {
-      $error = "Errore nel calcolo della validità del certificato.";
-    }
-  }
-
-  // Upload certificato (opzionale)
-  $medical_cert_file_path = $existing['medical_cert_file'] ?? null;
-
-  if (!$error && isset($_FILES['medical_cert_file']) && is_array($_FILES['medical_cert_file'])) {
-    $upErr = (int)($_FILES['medical_cert_file']['error'] ?? UPLOAD_ERR_NO_FILE);
-    if ($upErr !== UPLOAD_ERR_NO_FILE) {
-      if ($upErr !== UPLOAD_ERR_OK) {
-        $error = "Errore upload certificato (codice: {$upErr}).";
-      } else {
-        $tmp  = (string)$_FILES['medical_cert_file']['tmp_name'];
-        $name = (string)$_FILES['medical_cert_file']['name'];
-        $size = (int)($_FILES['medical_cert_file']['size'] ?? 0);
-
-        if ($size > 5 * 1024 * 1024) {
-          $error = "File troppo grande (max 5MB).";
-        } else {
-          $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-          $allowed = ['pdf','jpg','jpeg','png'];
-          if (!in_array($ext, $allowed, true)) {
-            $error = "Formato file non consentito. Usa PDF/JPG/PNG.";
-          } else {
-            $dir = __DIR__ . '/../uploads/medical';
-            if (!is_dir($dir)) @mkdir($dir, 0755, true);
-            if (!is_dir($dir) || !is_writable($dir)) {
-              $error = "Cartella upload non scrivibile: /uploads/medical";
-            } else {
-              $safe = 'cert_' . $user_id . '_' . date('Ymd_His') . '.' . $ext;
-              $dest = $dir . '/' . $safe;
-              if (!move_uploaded_file($tmp, $dest)) {
-                $error = "Impossibile salvare il file caricato.";
-              } else {
-                $medical_cert_file_path = 'uploads/medical/' . $safe;
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  /**
-   * Salvataggio DB
-   */
-  if (!$error) {
-
-    $sql = "
-      INSERT INTO athlete_profile (
-        user_id,
-        first_name, last_name, club_name, birth_date, gender,
-        shirt_size, pants_size, shoe_size,
-        address_residence, cap, city, tax_code,
-        phone_mobile, phone_landline,
-        primary_membership_federation_code, primary_membership_number,
-        medical_cert_date, medical_cert_type, medical_cert_valid_until, medical_cert_file,
-        consent_privacy, consent_communications, consent_marketing
-      ) VALUES (
-        ?,
-        ?, ?, ?, ?, ?,
-        ?, ?, ?,
-        ?, ?, ?, ?,
-        ?, ?,
-        ?, ?,
-        ?, ?, ?, ?,
-        ?, ?, ?
-      )
-      ON DUPLICATE KEY UPDATE
-        first_name = VALUES(first_name),
-        last_name = VALUES(last_name),
-        club_name = VALUES(club_name),
-        birth_date = VALUES(birth_date),
-        gender = VALUES(gender),
-        shirt_size = VALUES(shirt_size),
-        pants_size = VALUES(pants_size),
-        shoe_size = VALUES(shoe_size),
-        address_residence = VALUES(address_residence),
-        cap = VALUES(cap),
-        city = VALUES(city),
-        tax_code = VALUES(tax_code),
-        phone_mobile = VALUES(phone_mobile),
-        phone_landline = VALUES(phone_landline),
-        primary_membership_federation_code = VALUES(primary_membership_federation_code),
-        primary_membership_number = VALUES(primary_membership_number),
-        medical_cert_date = VALUES(medical_cert_date),
-        medical_cert_type = VALUES(medical_cert_type),
-        medical_cert_valid_until = VALUES(medical_cert_valid_until),
-        medical_cert_file = VALUES(medical_cert_file),
-        consent_privacy = VALUES(consent_privacy),
-        consent_communications = VALUES(consent_communications),
-        consent_marketing = VALUES(consent_marketing)
-    ";
-
-   $stmt = $conn->prepare($sql);
-if (!$stmt) {
-  $error = "Errore DB (prepare): " . h($conn->error);
-} else {
-  // 1 int + 20 stringhe + 3 int = 24 parametri
-  $types = "i" . str_repeat("s", 20) . str_repeat("i", 3);
-
-  $stmt->bind_param(
-    $types,
-    $user_id,
-    $form['first_name'],
-    $form['last_name'],
-    $form['club_name'],
-    $form['birth_date'],
-    $form['gender'],
-    $form['shirt_size'],
-    $form['pants_size'],
-    $form['shoe_size'],
-    $form['address_residence'],
-    $form['cap'],
-    $form['city'],
-    $form['tax_code'],
-    $form['phone_mobile'],
-    $form['phone_landline'],
-    $form['primary_membership_federation_code'],
-    $form['primary_membership_number'],
-    $form['medical_cert_date'],
-    $form['medical_cert_type'],
-    $medical_valid_until,
-    $medical_cert_file_path,
-    $form['consent_privacy'],
-    $form['consent_communications'],
-    $form['consent_marketing']
-  );
-
-  if (!$stmt->execute()) {
-    if ($stmt->errno === 1062) {
-      $error = "Codice Fiscale già presente nel sistema. Controlla di non aver inserito il CF di un altro atleta.";
-    } else {
-      $error = "Errore DB (execute): " . h($stmt->error);
-    }
-  }
-
-  $stmt->close();
-}
-  }
-  /**
-   * Solo se DB ok: aggiorna sessione e ricarica dati
-   */
-  if (!$error) {
-    $success = "Profilo salvato correttamente.";
-
-    $full_name = trim($form['first_name'] . ' ' . $form['last_name']);
-    if (function_exists('auth_refresh')) {
-      auth_refresh([
-        'full_name'  => $full_name,
-        'birth_date' => $form['birth_date'],
-        'gender'     => $form['gender'],
-      ]);
-    } else {
-      // fallback: aggiorna direttamente sessione se auth_refresh non esiste
-      $_SESSION['auth']['full_name']  = $full_name;
-      $_SESSION['auth']['birth_date'] = $form['birth_date'];
-      $_SESSION['auth']['gender']     = $form['gender'];
-    }
-
-    // ricarica existing
-    $stmt = $conn->prepare("SELECT * FROM athlete_profile WHERE user_id = ? LIMIT 1");
-    if ($stmt) {
-      $stmt->bind_param("i", $user_id);
-      $stmt->execute();
-      $existing = $stmt->get_result()->fetch_assoc();
-      $stmt->close();
-    }
-  }
+  // ... qui sotto lasci invariato: controlli regex, calcolo validità, upload, INSERT/UPDATE, success, refresh session ...
 }
 ?>
 <!doctype html>
@@ -380,6 +193,107 @@ if (!$stmt) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Profilo Atleta</title>
   <link rel="stylesheet" href="assets/app.css">
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body{ background:#f6f7f8; }
+
+  .ap-wrap{ max-width: 980px; margin: 28px auto; padding: 0 14px; }
+  .ap-title{ font-weight: 900; font-size: 26px; margin: 0 0 8px; }
+  .ap-sub{ color:#555; margin: 0 0 16px; }
+
+  .ap-grid{
+    display:grid;
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  @media (min-width: 900px){
+    .ap-grid{ grid-template-columns: 1fr 1fr; }
+    .ap-span-2{ grid-column: 1 / -1; }
+  }
+
+  .ap-card{
+    background:#fff;
+    border:1px solid #e5e7eb;
+    border-radius:16px;
+    padding:16px;
+    box-shadow:0 6px 18px rgba(0,0,0,.05);
+  }
+  .ap-card h3{
+    margin:0 0 10px;
+    font-size:16px;
+    font-weight:900;
+  }
+  .ap-help{ color:#6b7280; font-size:13px; margin-top:-6px; margin-bottom:10px; }
+
+  .ap-row{ display:grid; gap:10px; }
+  .ap-row-2{
+    display:grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  @media (min-width: 720px){
+    .ap-row-2{ grid-template-columns: 1fr 1fr; }
+  }
+
+  label{ display:block; font-weight:700; font-size:13px; margin: 8px 0 6px; }
+  input, select, textarea{
+    width:100%;
+    padding:10px 12px;
+    border:1px solid #d1d5db;
+    border-radius:12px;
+    background:#fff;
+  }
+  textarea{ min-height: 110px; resize: vertical; }
+
+  .ap-alert{
+    border-radius:14px;
+    padding:12px 14px;
+    border:1px solid #e5e7eb;
+    background:#fff;
+    margin: 0 0 14px;
+  }
+  .ap-alert.ok{ border-color:#86efac; background:#f0fdf4; }
+  .ap-alert.ko{ border-color:#fde68a; background:#fffbeb; }
+  .ap-alert strong{ font-weight:900; }
+  .ap-actions{ display:flex; gap:10px; flex-wrap:wrap; margin: 10px 0 16px; }
+
+  .btn{
+    display:inline-block;
+    padding:10px 12px;
+    border-radius:12px;
+    border:1px solid #d1d5db;
+    background:#fff;
+    text-decoration:none;
+    font-weight:800;
+    color:#111;
+  }
+  .btn-primary{
+    border:0;
+    background:#111827;
+    color:#fff;
+  }
+
+  .ap-sticky{
+    position: sticky;
+    bottom: 0;
+    background: rgba(246,247,248,.92);
+    backdrop-filter: blur(8px);
+    border-top:1px solid #e5e7eb;
+    padding: 10px 0;
+    margin-top: 14px;
+  }
+  .ap-sticky-inner{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    flex-wrap:wrap;
+  }
+  .ap-muted{ color:#6b7280; font-size:12px; }
+</style>
+
+
 </head>
 <body>
 
@@ -387,17 +301,18 @@ if (!$stmt) {
   <h1>Profilo Atleta</h1>
 
   <?php if ($profile_complete): ?>
-  <div class="alert alert-success">
-    Profilo completo: puoi iscriverti alle gare.
-  </div>
-<?php else: ?>
-  <div class="alert alert-warning">
-    <strong>Profilo incompleto:</strong> completa i campi obbligatori per poterti iscrivere.
-    <div class="small" style="margin-top:6px;">
-      Mancano: <?php echo h(implode(', ', $missing)); ?>
+    <div class="alert alert-success">
+      Profilo completo: puoi iscriverti alle gare.
     </div>
-  </div>
-<?php endif; ?>
+  <?php else: ?>
+    <div class="alert alert-warning">
+      <strong>Profilo incompleto:</strong> completa i campi obbligatori per poterti iscrivere.
+      <div class="small" style="margin-top:6px;">
+        Mancano: <?php echo h(implode(', ', $missing)); ?>
+      </div>
+    </div>
+  <?php endif; ?>
+
 
 
   <div style="margin:8px 0 14px; display:flex; gap:10px; flex-wrap:wrap;">

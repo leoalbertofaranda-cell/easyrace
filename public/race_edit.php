@@ -540,124 +540,218 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>EasyRace - Modifica gara</title>
+
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body{ background:#f6f7f8; color:#111; }
+  .re-wrap{ max-width: 980px; margin: 28px auto; padding: 0 14px; font-family: system-ui; }
+  .re-top{ display:flex; align-items:flex-end; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .re-title{ font-weight: 950; font-size: 28px; margin:0; }
+  .re-back a{ text-decoration:none; font-weight:800; }
+  .re-sub{ color:#555; margin: 6px 0 18px; }
+
+  .re-card{
+    background:#fff;
+    border:1px solid #e5e7eb;
+    border-radius:16px;
+    padding:16px;
+    box-shadow:0 6px 18px rgba(0,0,0,.05);
+    margin: 14px 0;
+  }
+  .re-card h3{ margin:0 0 10px; font-size:16px; font-weight:950; }
+
+  .re-grid{ display:grid; grid-template-columns: 1fr; gap:12px; }
+  @media (min-width: 860px){
+    .re-grid{ grid-template-columns: 1fr 1fr; }
+    .re-span-2{ grid-column: 1 / -1; }
+  }
+
+  label{ display:block; font-weight:800; font-size:13px; margin: 8px 0 6px; }
+  input, select, textarea{
+    width:100%;
+    padding:10px 12px;
+    border:1px solid #d1d5db;
+    border-radius:12px;
+    background:#fff;
+  }
+  textarea{ min-height: 120px; resize: vertical; }
+
+  .re-help{ color:#6b7280; font-size:12px; margin-top:6px; line-height:1.35; }
+  .re-box{
+    border:1px dashed #d1d5db;
+    background:#fafafa;
+    border-radius:14px;
+    padding:12px;
+  }
+
+  .re-actions{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:flex-end; margin-top: 10px; }
+  .btn{
+    display:inline-block;
+    padding:10px 14px;
+    border-radius:12px;
+    border:1px solid #d1d5db;
+    background:#fff;
+    font-weight:900;
+    cursor:pointer;
+  }
+  .btn-primary{ border:0; background:#111827; color:#fff; }
+
+  .re-alert{
+    padding:12px 14px; border-radius:14px; border:1px solid #ffb3b3; background:#ffecec; margin: 12px 0;
+  }
+</style>
+
+
+
 </head>
 
-<body style="font-family:system-ui;max-width:640px;margin:40px auto;padding:0 16px;">
+<body>
+<div class="re-wrap">
 
-  <h1>Modifica gara</h1>
-  <p><a href="event_detail.php?id=<?php echo (int)$event_id; ?>">← Torna all’evento</a></p>
+  <div class="re-top">
+  <h1 class="re-title">Modifica gara</h1>
+  <div class="re-back">
+    <a href="event_detail.php?id=<?php echo (int)$event_id; ?>">← Torna all’evento</a>
+  </div>
+</div>
+<p class="re-sub">Imposta quote, dettagli gara e modalità di pagamento.</p>
 
-  <?php if ($error): ?>
-    <div style="padding:12px;background:#ffecec;border:1px solid #ffb3b3;margin:12px 0;">
-      <?php echo h($error); ?>
-    </div>
-  <?php endif; ?>
+<?php if ($error): ?>
+  <div class="re-alert"><?php echo h($error); ?></div>
+<?php endif; ?>
 
-  <form method="post">
+<form method="post">
 
-    <h3>Quote iscrizione</h3>
-
-    <label>Early (€)</label><br>
-    <input type="text" inputmode="decimal" name="fee_early_eur"
-           value="<?php echo h($form['fee_early_eur'] ?? ''); ?>"><br><br>
-
-    <label>Fino al (Early)</label><br>
-    <input type="date" name="fee_early_until"
-           value="<?php echo h((string)($form['fee_early_until'] ?? '')); ?>"><br><br>
-
-    <label>Regular (€)</label><br>
-    <input type="text" inputmode="decimal" name="fee_regular_eur"
-           value="<?php echo h($form['fee_regular_eur'] ?? ''); ?>"><br><br>
-
-    <label>Late (€)</label><br>
-    <input type="text" inputmode="decimal" name="fee_late_eur"
-           value="<?php echo h($form['fee_late_eur'] ?? ''); ?>"><br><br>
-
-    <label>Dal (Late)</label><br>
-    <input type="date" name="fee_late_from"
-           value="<?php echo h((string)($form['fee_late_from'] ?? '')); ?>"><br><br>
-
-    <label>Titolo *</label><br>
-    <input name="title" value="<?php echo h($form['title']); ?>" style="width:100%;padding:10px;margin:6px 0 12px;" required>
-
-    <label>Luogo</label><br>
-    <input name="location" value="<?php echo h($form['location']); ?>" style="width:100%;padding:10px;margin:6px 0 12px;">
-
-    <label>Data/Ora (inizio)</label><br>
-    <input type="datetime-local" name="start_at" value="<?php echo h($form['start_at']); ?>" style="width:100%;padding:10px;margin:6px 0 12px;">
-
-    <label>Disciplina</label><br>
-    <select name="discipline" style="width:100%;padding:10px;margin:6px 0 12px;">
-      <option value="cycling" <?php echo ($form['discipline']==='cycling'?'selected':''); ?>>cycling</option>
-      <option value="running" <?php echo ($form['discipline']==='running'?'selected':''); ?>>running</option>
-      <option value="other" <?php echo ($form['discipline']==='other'?'selected':''); ?>>other</option>
-    </select>
-
-    <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
-
-      <div style="flex:1; min-width:240px;">
-        <label for="base_fee">Quota base (organizzatore)</label><br>
-        <input
-          id="base_fee"
-          name="base_fee"
-          value="<?php echo h($form['base_fee'] ?? ''); ?>"
-          placeholder="es. 13,50"
-          style="width:100%;padding:10px;margin:6px 0 12px;"
-          inputmode="decimal"
-          autocomplete="off"
-        >
-        <div style="font-size:12px;color:#666;margin-top:-6px;">
-          Importo che l’organizzatore intende incassare per ogni iscritto.
-        </div>
+  <div class="re-card">
+    <h3>QUOTA ISCRIZIONI</h3>
+    <div class="re-grid">
+      <div>
+        <label>Apertura Iscrizioni (€)</label>
+        <input type="text" inputmode="decimal" name="fee_early_eur" value="<?php echo h($form['fee_early_eur'] ?? ''); ?>">
+      </div>
+      <div>
+        <label>Quota di apertura fino al</label>
+        <input type="date" name="fee_early_until" value="<?php echo h((string)($form['fee_early_until'] ?? '')); ?>">
       </div>
 
-      <div style="flex:1; min-width:240px;">
-        <label for="total_fee_preview">Quota online (finale atleta)</label><br>
-        <input
-          id="total_fee_preview"
-          value=""
-          readonly
-          style="width:100%;padding:10px;margin:6px 0 12px;background:#f6f6f6;"
-        >
-        <div style="font-size:12px;color:#666;margin-top:-6px;">
-          Include commissioni di servizio EasyRace
-          <span style="white-space:nowrap;">(ed eventuale procacciatore)</span>.
-        </div>
-        <div id="fee_breakdown" style="font-size:12px;color:#666;margin-top:4px;"></div>
+      <div>
+        <label>Quota Regolare (€)</label>
+        <input type="text" inputmode="decimal" name="fee_regular_eur" value="<?php echo h($form['fee_regular_eur'] ?? ''); ?>">
+      </div>
+      <div>
+        <label>Quota Ultimi posti (€)</label>
+        <input type="text" inputmode="decimal" name="fee_late_eur" value="<?php echo h($form['fee_late_eur'] ?? ''); ?>">
       </div>
 
+      <div class="re-span-2">
+        <label>Ultimi posti dal</label>
+        <input type="date" name="fee_late_from" value="<?php echo h((string)($form['fee_late_from'] ?? '')); ?>">
+      </div>
     </div>
+  </div>
 
-    <label>IBAN organizzatore (per questa gara)</label><br>
-    <input name="organizer_iban" value="<?php echo h($form['organizer_iban']); ?>"
-           placeholder="es. IT60X0542811101000000123456"
-           style="width:100%;padding:10px;margin:6px 0 12px;">
+  <div class="re-card">
+    <h3>Dati gara</h3>
+    <div class="re-grid">
+      <div class="re-span-2">
+        <label>Titolo *</label>
+        <input name="title" value="<?php echo h($form['title']); ?>" required>
+      </div>
+      <div>
+        <label>Luogo</label>
+        <input name="location" value="<?php echo h($form['location']); ?>">
+      </div>
+      <div>
+        <label>Data/Ora (inizio)</label>
+        <input type="datetime-local" name="start_at" value="<?php echo h($form['start_at']); ?>">
+      </div>
+      <div>
+        <label>Disciplina</label>
+        <select name="discipline">
+  <option value="cycling" <?php echo ($form['discipline']==='cycling'?'selected':''); ?>>Ciclismo</option>
+  <option value="running" <?php echo ($form['discipline']==='running'?'selected':''); ?>>Corsa</option>
+  <option value="other"   <?php echo ($form['discipline']==='other'?'selected':''); ?>>Altro</option>
+</select>
+      </div>
+      <div>
+        <label>Stato</label>
+        <select name="status">
+  <option value="draft"    <?php echo ($form['status']==='draft'?'selected':''); ?>>Bozza</option>
+  <option value="open"     <?php echo ($form['status']==='open'?'selected':''); ?>>Aperta</option>
+  <option value="closed"   <?php echo ($form['status']==='closed'?'selected':''); ?>>Chiusa</option>
+  <option value="archived" <?php echo ($form['status']==='archived'?'selected':''); ?>>Archiviata</option>
+</select>
+      </div>
+    </div>
+  </div>
 
-    <label>Istruzioni pagamento (testo libero)</label><br>
-    <textarea name="payment_instructions" rows="5"
-              style="width:100%;padding:10px;margin:6px 0 12px;"
-              placeholder="Esempio: bonifico, causale, intestazione, scadenze..."><?php echo h($form['payment_instructions'] ?? ''); ?></textarea>
+  <div class="re-card">
+    <h3>Quota e incassi</h3>
+    <div class="re-grid">
+      <div>
+        <label for="base_fee">Quota base (organizzatore)</label>
+        <input id="base_fee" name="base_fee" value="<?php echo h($form['base_fee'] ?? ''); ?>" placeholder="es. 13,50" inputmode="decimal" autocomplete="off">
+        <div class="re-help">Importo che l’organizzatore intende incassare per ogni iscritto.</div>
+      </div>
 
-    <label>Metodo di pagamento</label><br>
-    <select name="payment_mode" id="payment_mode" style="width:100%;padding:10px;margin:6px 0 12px;">
-      <option value="manual" <?php echo ($form['payment_mode']==='manual'?'selected':''); ?>>Manuale</option>
-      <option value="stripe" <?php echo ($form['payment_mode']==='stripe'?'selected':''); ?>>Carta (Stripe)</option>
-      <option value="both"   <?php echo ($form['payment_mode']==='both'?'selected':''); ?>>Manuale + Carta</option>
-    </select>
+      <div class="re-box">
+        <label for="total_fee_preview">Quota online (finale atleta)</label>
+        <input id="total_fee_preview" value="" readonly style="background:#f3f4f6;">
+        <div class="re-help">Include commissioni di servizio EasyRace (ed eventuale procacciatore).</div>
+        <div id="fee_breakdown" class="re-help"></div>
+      </div>
+
+      <div class="re-span-2">
+        <label>IBAN organizzatore (per questa gara)</label>
+        <input name="organizer_iban" value="<?php echo h($form['organizer_iban']); ?>" placeholder="es. IT60X0542811101000000123456">
+      </div>
+    </div>
+  </div>
+
+  <div class="re-card">
+    <h3>Pagamenti</h3>
+    <div class="re-grid">
+      <div class="re-span-2">
+        <label>Istruzioni pagamento (testo libero)</label>
+        <textarea name="payment_instructions" placeholder="Esempio: bonifico, causale, intestazione, scadenze..."><?php echo h($form['payment_instructions'] ?? ''); ?></textarea>
+      </div>
+
+      <div>
+        <label>Metodo di pagamento</label>
+        <select name="payment_mode" id="payment_mode">
+          <option value="manual" <?php echo ($form['payment_mode']==='manual'?'selected':''); ?>>Manuale</option>
+          <option value="stripe" <?php echo ($form['payment_mode']==='stripe'?'selected':''); ?>>Carta (Stripe)</option>
+          <option value="both"   <?php echo ($form['payment_mode']==='both'?'selected':''); ?>>Manuale + Carta</option>
+        </select>
+      </div>
+
+      <div>
+        <label>Procacciatore (opzionale)</label>
+        <select name="ref_admin_id" id="ref_admin_id">
+          <option value="0" <?php echo ($form['ref_admin_id']==='0'?'selected':''); ?>>Nessuno</option>
+          <?php foreach ($admins as $a): ?>
+            <option value="<?php echo (int)$a['id']; ?>" <?php echo ((string)$a['id']===$form['ref_admin_id']?'selected':''); ?>>
+              <?php echo h(($a['full_name'] ?? 'Admin').' · '.($a['email'] ?? '')); ?>
+            </option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+    </div>
 
     <?php
       $pm = (string)($form['payment_mode'] ?? 'manual');
       $needsStripe = in_array($pm, ['stripe','both'], true);
     ?>
     <?php if ($needsStripe && !$stripe_ready): ?>
-      <div style="margin:-4px 0 12px;padding:12px;border:1px solid #f2c46f;border-radius:12px;background:#fff6e5;">
-        <div style="font-weight:900;margin-bottom:6px;">Stripe non attivo</div>
+      <div style="margin-top:12px;padding:12px;border:1px solid #f2c46f;border-radius:14px;background:#fff6e5;">
+        <div style="font-weight:950;margin-bottom:6px;">Stripe non attivo</div>
         <div style="color:#555;font-size:13px;line-height:1.4;">
           Hai selezionato pagamenti con carta, ma l’organizzazione non ha completato l’onboarding Stripe.
         </div>
         <?php if ($org_id > 0): ?>
           <div style="margin-top:8px;">
-            <a href="stripe_onboarding.php?org_id=<?php echo (int)$org_id; ?>" style="font-weight:900;text-decoration:none;">
+            <a href="stripe_onboarding.php?org_id=<?php echo (int)$org_id; ?>" style="font-weight:950;text-decoration:none;">
               Vai ad attivare Stripe →
             </a>
           </div>
@@ -665,27 +759,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       </div>
     <?php endif; ?>
 
-    <label>Procacciatore (opzionale)</label><br>
-    <select name="ref_admin_id" id="ref_admin_id" style="width:100%;padding:10px;margin:6px 0 12px;">
-      <option value="0" <?php echo ($form['ref_admin_id']==='0'?'selected':''); ?>>Nessuno</option>
-      <?php foreach ($admins as $a): ?>
-        <option value="<?php echo (int)$a['id']; ?>" <?php echo ((string)$a['id']===$form['ref_admin_id']?'selected':''); ?>>
-          <?php echo h(($a['full_name'] ?? 'Admin').' · '.($a['email'] ?? '')); ?>
-        </option>
-      <?php endforeach; ?>
-    </select>
+  </div>
 
-    <label>Stato</label><br>
-    <select name="status" style="width:100%;padding:10px;margin:6px 0 12px;">
-      <option value="draft" <?php echo ($form['status']==='draft'?'selected':''); ?>>draft</option>
-      <option value="open" <?php echo ($form['status']==='open'?'selected':''); ?>>open</option>
-      <option value="closed" <?php echo ($form['status']==='closed'?'selected':''); ?>>closed</option>
-      <option value="archived" <?php echo ($form['status']==='archived'?'selected':''); ?>>archived</option>
-    </select>
+  <div class="re-actions">
+    <button type="submit" class="btn btn-primary">Salva modifiche</button>
+  </div>
 
-    <button type="submit" style="padding:10px 14px;">Salva modifiche</button>
+</form>
 
-  </form>
+
+
 
 <script>
 (function(){

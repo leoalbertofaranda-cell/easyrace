@@ -7,13 +7,6 @@ require_once __DIR__ . '/../app/includes/layout.php';
 
 $conn = db($config);
 
-function it_date(?string $d): string {
-  if (!$d) return '-';
-  $ts = strtotime($d);
-  if (!$ts) return $d;
-  return date('d/m/Y', $ts);
-}
-
 
 function it_race_status(string $s): string {
   return match ($s) {
