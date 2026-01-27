@@ -23,12 +23,7 @@ if ($role !== 'athlete') {
 $conn = db($config);
 
 // helper IT minimale
-function it_datetime(?string $dt): string {
-  if (!$dt) return '-';
-  $ts = strtotime($dt);
-  if (!$ts) return $dt;
-  return date('d/m/Y H:i', $ts);
-}
+
 function it_status(string $s): string {
   return match ($s) {
     'confirmed' => 'Approvato',

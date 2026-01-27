@@ -62,12 +62,6 @@ function reason_hint(string $r): string {
   };
 }
 
-function it_datetime(?string $dt): string {
-  if (!$dt) return '-';
-  $ts = strtotime($dt);
-  if (!$ts) return $dt;
-  return date('d/m/Y H:i', $ts);
-}
 
 function it_payment(string $p): string {
   return match ($p) {
