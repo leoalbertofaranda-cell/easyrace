@@ -45,8 +45,8 @@ function slug(string $s): string {
   return $s ?: 'gara';
 }
 
-$start = (string)($race['start_at'] ?? '');
-$day = $start ? substr($start, 0, 10) : date('Y-m-d');
+$start_raw = (string)($race['start_at'] ?? '');
+$day = ($start_raw !== '') ? substr($start_raw, 0, 10) : date('Y-m-d'); // YYYY-MM-DD
 
 $fname = sprintf(
   'segreteria_iscritti_%s_%s_race-%d.csv',
@@ -77,7 +77,6 @@ header('Content-Disposition: attachment; filename="'.$fname.'"');
 
 $out = fopen('php://output', 'w');
 fwrite($out, "\xEF\xBB\xBF"); // BOM Excel
-fputcsv($out, ['__DEBUG__', date('Y-m-d H:i:s')]);
 
 fputcsv($out, [
   'Pettorale',
@@ -156,7 +155,7 @@ foreach ($rows as $r) {
     $last,
     $first,
     strtoupper((string)($r['gender'] ?? '')),
-    (string)($r['birth_date'] ?? ''),
+    it_date($r['birth_date'] ?? null),
     (string)($r['nationality_code'] ?? ''),
     (string)($r['division_label'] ?? ''),
     (string)($r['primary_membership_federation_code'] ?? ''),
@@ -167,10 +166,11 @@ foreach ($rows as $r) {
     (string)($r['email'] ?? ''),
     (string)($r['city'] ?? ''),
     cents_to_eur((int)($r['fee_total_cents'] ?? 0)),
-    (string)($r['paid_at'] ?? ''),
+    it_datetime($r['paid_at'] ?? null),
     (string)($r['reg_id'] ?? ''),
   ]);
 }
+
 
 fclose($out);
 exit;

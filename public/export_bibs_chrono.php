@@ -129,18 +129,18 @@ $res = $stmt->get_result();
 
 while ($r = $res->fetch_assoc()) {
   fputcsv($out, [
-    $r['bib_number'],
-    $r['last_name'],
-    $r['first_name'],
-    strtoupper((string)$r['gender']),
-    $r['birth_date'],
-    $r['nationality_code'],
+    (string)($r['bib_number'] ?? ''),
+    (string)($r['last_name'] ?? ''),
+    (string)($r['first_name'] ?? ''),
+    strtoupper((string)($r['gender'] ?? '')),
+    it_date($r['birth_date'] ?? null),
+    (string)($r['nationality_code'] ?? ''),
     (string)($r['division_label'] ?? ''),
-    $r['primary_membership_federation_code'],
-    $r['primary_membership_number'],
+    (string)($r['primary_membership_federation_code'] ?? ''),
+    (string)($r['primary_membership_number'] ?? ''),
     (string)($r['category_code'] ?? ''),
     (string)($r['category_label'] ?? ''),
-    $r['club_name']
+    (string)($r['club_name'] ?? '')
   ]);
 }
 

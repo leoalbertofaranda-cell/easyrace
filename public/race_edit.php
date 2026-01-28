@@ -239,6 +239,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $form['title']         = trim((string)($_POST['title'] ?? ''));
   $form['location']      = trim((string)($_POST['location'] ?? ''));
   $form['start_at']      = (string)($_POST['start_at'] ?? '');
+  $form['close_at']      = (string)($_POST['close_at'] ?? '');
   $form['discipline']    = (string)($_POST['discipline'] ?? 'other');
   $form['status']        = (string)($_POST['status'] ?? 'draft');
   $form['base_fee']      = trim((string)($_POST['base_fee'] ?? ''));
@@ -261,7 +262,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   // --- variabili “pulite” ---
   $title      = $form['title'];
   $location   = $form['location'];
-  $start_at   = ($form['start_at'] !== '') ? $form['start_at'] : null; // datetime-local -> DATETIME
+  $start_at = null;
+if ($form['start_at'] !== '') {
+  // "YYYY-MM-DDTHH:MM" -> "YYYY-MM-DD HH:MM:SS"
+  $start_at = str_replace('T', ' ', $form['start_at']) . ':00';
+}
+
+$close_at_sql = '';
+if (($form['close_at'] ?? '') !== '') {
+  $close_at_sql = str_replace('T', ' ', (string)$form['close_at']) . ':00';
+}
+
   $discipline = $form['discipline'];
   $status     = $form['status'];
 
@@ -318,51 +329,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $stmtB->close();
 
     // UPDATE races
-    $stmt = $conn->prepare("
-      UPDATE races
-      SET
-        title=?,
-        location=?,
-        start_at=?,
-        discipline=?,
-        status=?,
-        base_fee_cents=?,
-        organizer_iban=?,
-        payment_instructions=?,
-        payment_mode=?,
-        ref_admin_id=NULLIF(?,0),
-        fee_early_cents=?,
-        fee_regular_cents=?,
-        fee_late_cents=?,
-        fee_early_until=?,
-        fee_late_from=?
-      WHERE id=?
-      LIMIT 1
-    ");
-    if (!$stmt) throw new RuntimeException("Errore DB (prepare): " . h($conn->error));
+$stmt = $conn->prepare("
+  UPDATE races
+  SET
+    title=?,
+    location=?,
+    start_at=?,
+    discipline=?,
+    status=?,
+    base_fee_cents=?,
+    organizer_iban=?,
+    payment_instructions=?,
+    payment_mode=?,
+    ref_admin_id=NULLIF(?,0),
+    fee_early_cents=?,
+    fee_regular_cents=?,
+    fee_late_cents=?,
+    fee_early_until=?,
+    fee_late_from=?,
+    close_at = NULLIF(?, '')
+  WHERE id=?
+  LIMIT 1
+");
+if (!$stmt) throw new RuntimeException("Errore DB (prepare): " . h($conn->error));
 
-    $stmt->bind_param(
-      "sssssisssiiiissi",
-      $title,
-      $location,
-      $start_at,
-      $discipline,
-      $status,
-      $base_fee_cents,
-      $organizer_iban,
-      $payment_instructions,
-      $payment_mode,
-      $ref_admin_id,
-      $fee_early_cents,
-      $fee_regular_cents,
-      $fee_late_cents,
-      $fee_early_until,
-      $fee_late_from,
-      $race_id
-    );
+$stmt->bind_param(
+  "sssssisssiiiisssi",
+  $title,
+  $location,
+  $start_at,
+  $discipline,
+  $status,
+  $base_fee_cents,
+  $organizer_iban,
+  $payment_instructions,
+  $payment_mode,
+  $ref_admin_id,
+  $fee_early_cents,
+  $fee_regular_cents,
+  $fee_late_cents,
+  $fee_early_until,
+  $fee_late_from,
+  $close_at_sql,
+  $race_id
+);
 
-    $stmt->execute();
-    $stmt->close();
+$stmt->execute();
+$stmt->close();
+
 
     // snapshot AFTER per audit
     $stmtA = $conn->prepare("
@@ -666,6 +680,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <label>Data/Ora (inizio)</label>
         <input type="datetime-local" name="start_at" value="<?php echo h($form['start_at']); ?>">
       </div>
+
+<?php
+$close_at_val = '';
+if (!empty($race['close_at'])) {
+  $close_at_val = str_replace(' ', 'T', substr((string)$race['close_at'], 0, 16));
+}
+?>
+
+<div class="col-12 col-md-4">
+  <label class="form-label fw-bold">Chiusura iscrizioni</label>
+  <input
+    type="datetime-local"
+    name="close_at"
+    class="form-control"
+    value="<?php echo h($close_at_val); ?>"
+  >
+  <div class="form-text">Se vuoto: iscrizioni sempre aperte.</div>
+</div>
+
+
       <div>
         <label>Disciplina</label>
         <select name="discipline">
@@ -690,7 +724,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <h3>Quota e incassi</h3>
     <div class="re-grid">
       <div>
-        <label for="base_fee">Quota base (organizzatore)</label>
+        <label for="base_fee">Quota fallback (se non usi gli scaglioni)</label>
+
+<div class="re-help">
+  Usata solo se non sono impostate le tariffe a scaglioni.
+  Se è presente la quota <b>"Apertura Iscrizioni"</b>, questa viene considerata la quota principale.
+</div>
+
         <input id="base_fee" name="base_fee" value="<?php echo h($form['base_fee'] ?? ''); ?>" placeholder="es. 13,50" inputmode="decimal" autocomplete="off">
         <div class="re-help">Importo che l’organizzatore intende incassare per ogni iscritto.</div>
       </div>
@@ -825,18 +865,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     var platformCents = calcPlatformFeeCents(baseCents);
-    var adminCents = getAdminFeeCents();
+var adminCents = getAdminFeeCents();
 
-    var totalCents = baseCents + platformCents + adminCents;
-    totalCents = roundUpTo(totalCents, platformSettings.round_to_cents);
+var preTotal = baseCents + platformCents + adminCents;
+var totalCents = roundUpTo(preTotal, platformSettings.round_to_cents);
+var roundingDelta = totalCents - preTotal;
 
-    totalEl.value = totalCents ? (centsToEuro(totalCents) + ' €') : '';
+// piattaforma = fee fissa + arrotondamento
+var platformTake = platformCents + roundingDelta;
 
-    var parts = [];
-    if (baseCents) parts.push('Base ' + centsToEuro(baseCents) + '€');
-    if (platformCents) parts.push('EasyRace ' + centsToEuro(platformCents) + '€');
-    if (adminCents) parts.push('Procacciatore ' + centsToEuro(adminCents) + '€');
-    breakdownEl.textContent = parts.length ? ('Dettaglio: ' + parts.join(' + ')) : '';
+totalEl.value = totalCents ? (centsToEuro(totalCents) + ' €') : '';
+
+var parts = [];
+parts.push('Base ' + centsToEuro(baseCents) + '€');
+parts.push('EasyRace ' + centsToEuro(platformTake) + '€');
+if (adminCents) parts.push('Procacciatore ' + centsToEuro(adminCents) + '€');
+
+breakdownEl.textContent = 'Dettaglio: ' + parts.join(' + ');
+
   }
 
   if (baseEl) {

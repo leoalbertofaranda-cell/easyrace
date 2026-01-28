@@ -93,6 +93,18 @@ require_org_permission($conn, (int)$race['organization_id'], 'manage_races');
 
 $error = '';
 
+// ======================================================
+// Quota (preview) - come race_public.php
+// ======================================================
+[$tier_code_preview, $tier_label_preview, $base_fee_cents_preview] = race_fee_pick_tier($race);
+
+$platform_settings = get_platform_settings($conn);
+$admin_settings    = get_admin_settings($conn, (int)($race['admin_user_id'] ?? 0));
+
+$fees_preview = calc_fees_total((int)$base_fee_cents_preview, $platform_settings, $admin_settings);
+$fee_total_cents_preview = (int)($fees_preview['total_cents'] ?? 0);
+
+
 /**
  * Messaggi da redirect
  */
@@ -510,11 +522,12 @@ page_header($pageTitle);
   <b>Organizzazione:</b> <?php echo h($race['org_name'] ?? ''); ?><br>
   <b>Evento:</b> <?php echo h($race['event_title'] ?? ''); ?><br>
   <b>Luogo:</b> <?php echo h($race['location'] ?? '-'); ?><br>
-    <b>Data/Ora:</b> <?php echo h(it_datetime($race['start_at'] ?? '')); ?><br>
+  <b>Data/Ora:</b> <?php echo h(it_datetime($race['start_at'] ?? '')); ?><br>
   <b>Disciplina:</b> <?php echo h(label_discipline($race['discipline'] ?? '')); ?><br>
+  <b>Quota:</b> € <?php echo h(cents_to_eur((int)$fee_total_cents_preview)); ?><br>
   <b>Stato gara:</b> <?php echo h(label_status($race['status'] ?? '')); ?>
-
 </p>
+
 
 <div style="margin:10px 0 16px;">
   <a href="race_edit.php?id=<?php echo (int)$race_id; ?>"

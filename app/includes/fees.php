@@ -9,16 +9,11 @@ $publicRegs = [];
  * step=50 => arrotonda a 0,50€
  */
 function fee_round(int $cents, int $step = 50): int {
+  $cents = max(0, $cents);
   if ($step <= 0) return $cents;
-  $r = $cents % $step;
-  if ($r === 0) return $cents;
-
-  $down = $cents - $r;
-  $up   = $down + $step;
-
-  // half-up
-  return ($r * 2 >= $step) ? $up : $down;
+  return (int)(ceil($cents / $step) * $step);
 }
+
 
 /**
  * Calcola fee percentuale in basis points (bp).

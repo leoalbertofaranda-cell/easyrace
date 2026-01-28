@@ -11,6 +11,24 @@ require_once __DIR__ . '/../app/includes/audit.php';
 
 $conn = db($config);
 
+// ======================================================
+// Traduzioni UI (public)
+// ======================================================
+function discipline_label(string $code): string {
+  $code = strtolower(trim($code));
+  return match ($code) {
+    'cycling' => 'Ciclismo',
+    'running' => 'Corsa',
+    'swimming' => 'Nuoto',
+    'triathlon' => 'Triathlon',
+    'mtb' => 'MTB',
+    'road' => 'Strada',
+    'track' => 'Pista',
+    'other' => 'Altro',
+    default => ($code !== '' ? strtoupper($code) : '—'),
+  };
+}
+
 /**
  * Helper IT
  */
@@ -116,7 +134,14 @@ if ($logged && function_exists('auth_user')) {
 $error = '';
 
 // Iscrizioni consentite solo se gara open
-$canRegister = (($race['status'] ?? '') === 'open');
+$now_ts   = time();
+$close_ts = (!empty($race['close_at'])) ? strtotime((string)$race['close_at']) : 0;
+
+$is_closed_by_time = ($close_ts > 0 && $now_ts > $close_ts);
+
+// Iscrizioni consentite solo se gara open E non oltre close_at
+$canRegister = (($race['status'] ?? '') === 'open') && !$is_closed_by_time;
+
 
 // ======================================================
 // Divisioni gara (solo lettura)
@@ -143,6 +168,7 @@ $hasDivisions = !empty($raceDivisions);
 $publicRegs = [];
 $stmt = $conn->prepare("
   SELECT
+  r.user_id AS reg_user_id,
   COALESCE(r.bib_number, '') AS bib_number,  
   COALESCE(ap.first_name, '') AS first_name,
     COALESCE(ap.last_name,  '') AS last_name,
@@ -298,6 +324,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
         [$tier_code_db, $tier_label_db, $base_fee_cents] = race_fee_pick_tier($race);
 
         $platform_settings = get_platform_settings($conn);
+        echo "<pre>"; var_dump($platform_settings); echo "</pre>"; exit;
+
         $admin_user_id     = (int)($race['admin_user_id'] ?? 0);
         $admin_settings    = get_admin_settings($conn, $admin_user_id);
 
@@ -433,7 +461,8 @@ $stmt->bind_param(
   $cat_label_db,
   $division_id_db,
   $division_code_db,
-  $division_label_db
+  $division_label_db,
+  $close_at
 );
 
 
@@ -489,19 +518,20 @@ $stmt->bind_param(
     // -------------------------
     if ($action === 'cancel') {
       try {
-        $stmt = $conn->prepare("
-          UPDATE registrations
-          SET
-            status = 'cancelled',
-            status_reason = 'CANCELLED_BY_USER',
-            payment_status = 'unpaid',
-            confirmed_at = NULL,
-            paid_total_cents = 0,
-            paid_at = NULL
-          WHERE race_id = ? AND user_id = ?
-          LIMIT 1
-        ");
-        $stmt->bind_param("ii", $race_id, $u['id']);
+      $stmt = $conn->prepare("
+  UPDATE registrations
+  SET
+    status = 'cancelled',
+    status_reason = 'CANCELLED_BY_USER',
+    payment_status = 'unpaid',
+    confirmed_at = NULL,
+    paid_total_cents = 0,
+    paid_at = NULL
+  WHERE race_id = ? AND user_id = ?
+  LIMIT 1
+");
+$stmt->bind_param("ii", $race_id, $u['id']);
+
         $stmt->execute();
         $stmt->close();
 
@@ -555,58 +585,68 @@ $pageTitle = 'Gara: ' . ($race['title'] ?? '');
 page_header($pageTitle);
 ?>
 
-<section style="margin:12px 0 16px;padding:14px;border:1px solid #ddd;border-radius:12px;">
-  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;">
-    <div style="min-width:260px;">
+<section style="margin:12px 0 16px;padding:16px;border:1px solid #ddd;border-radius:12px;">
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;">
+
+    <!-- COLONNA SX: Titolo + contesto -->
+    <div style="min-width:260px;flex:1;">
       <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#666;">Gara</div>
-      <div style="font-size:22px;font-weight:900;line-height:1.2;">
+
+      <div style="font-size:24px;font-weight:900;line-height:1.15;margin-top:2px;">
         <?php echo h($race['title'] ?? ''); ?>
       </div>
-      <div style="margin-top:6px;color:#444;">
-        <span style="font-weight:700;">Organizzazione:</span> <?php echo h($race['org_name'] ?? ''); ?><br>
-        <span style="font-weight:700;">Evento:</span> <?php echo h($race['event_title'] ?? ''); ?>
+
+      <div style="margin-top:10px;color:#444;line-height:1.45;">
+        <div><span style="font-weight:800;">Organizzazione:</span> <?php echo h($race['org_name'] ?? ''); ?></div>
+        <div><span style="font-weight:800;">Evento:</span> <?php echo h($race['event_title'] ?? ''); ?></div>
       </div>
     </div>
 
-    <div style="min-width:260px;display:grid;gap:8px;">
+    <!-- COLONNA CENTRO: luogo + data -->
+    <div style="min-width:240px;display:grid;gap:10px;">
       <div>
         <div style="font-size:12px;color:#666;">Luogo</div>
-        <div style="font-weight:800;"><?php echo h($race['location'] ?? '-'); ?></div>
+        <div style="font-weight:900;"><?php echo h($race['location'] ?? '-'); ?></div>
       </div>
       <div>
-        <div style="font-size:12px;color:#666;">Data/Ora</div>
-        <div style="font-weight:800;"><?php echo h(it_datetime($race['start_at'] ?? null)); ?></div>
+        <div style="font-size:12px;color:#666;">Data / Ora</div>
+        <div style="font-weight:900;"><?php echo h(it_datetime($race['start_at'] ?? null)); ?></div>
       </div>
     </div>
 
-    <div style="min-width:220px;display:grid;gap:8px;">
+    <!-- COLONNA DX: disciplina + quota + stato -->
+    <div style="min-width:240px;display:grid;gap:10px;">
       <div>
         <div style="font-size:12px;color:#666;">Disciplina</div>
-        <div style="font-weight:800;"><?php echo h($race['discipline'] ?? '-'); ?></div>
+        <div style="font-weight:900;"><?php echo h(discipline_label((string)($race['discipline'] ?? ''))); ?></div>
       </div>
 
-<div>
-  <div style="font-size:12px;color:#666;">Quota iscrizione</div>
-  <div style="font-size:18px;font-weight:900;">
-    € <?php echo h(cents_to_eur((int)$fee_total_cents_preview)); ?>
-    <span style="font-size:12px;font-weight:700;color:#555;">
-      (<?php echo h((string)$tier_label_preview); ?>)
-    </span>
+      <div>
+        <div style="font-size:12px;color:#666;">Quota iscrizione</div>
+        <div style="font-size:18px;font-weight:900;line-height:1.2;">
+          € <?php echo h(cents_to_eur((int)$fee_total_cents_preview)); ?>
+          <div style="font-size:12px;font-weight:800;color:#666;margin-top:2px;">
+            <?php echo h((string)$tier_label_preview); ?>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div style="font-size:12px;color:#666;">Iscrizioni</div>
+        <div style="font-weight:900;">
+          <?php echo h(it_race_status((string)($race['status'] ?? ''))); ?>
+          <?php if (!empty($is_closed_by_time) && !empty($race['close_at'])): ?>
+            <div style="font-size:12px;font-weight:800;color:#666;margin-top:2px;">
+              Chiusura automatica: <?php echo h(it_datetime($race['close_at'] ?? null)); ?>
+            </div>
+          <?php endif; ?>
+        </div>
+      </div>
+    </div>
+
   </div>
-</div>
+</section>
 
-
-  <div>
-  <div style="font-size:12px;color:#666;">Iscrizioni</div>
-  <div style="font-weight:900;">
-    <?php echo h(it_race_status((string)($race['status'] ?? ''))); ?>
-  </div>
-</div>
-<!-- /Iscrizioni -->
-
-</div><!-- /colonna dx -->
-</div><!-- /flex -->
-</section><!-- /card header gara -->
 <?php if (!empty($myReg)): ?>
   <?php
     $st = (string)($myReg['status'] ?? '');
@@ -677,30 +717,8 @@ $has_manual_info = ($instr_raw !== '');
 
 <?php if ($needsPayInfo): ?>
 
-  <?php if ($payment_mode === 'manual' || $payment_mode === 'both'): ?>
-    <?php if ($has_manual_info): ?>
-      <div style="margin-top:10px;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
-        <div style="font-weight:900;margin-bottom:6px;">Come pagare</div>
-        <div style="color:#444;font-size:14px;line-height:1.4;">
-          <?= nl2br(h($instr_raw)) ?>
-        </div>
-      </div>
-    <?php else: ?>
-      <div style="margin-top:10px;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
-        <div style="font-weight:900;margin-bottom:6px;">Pagamento richiesto</div>
-        <div style="color:#444;font-size:14px;">
-          Le istruzioni di pagamento non sono state ancora inserite dall’organizzazione.
-        </div>
-      </div>
-    <?php endif; ?>
-  <?php endif; ?>
-
-  <?php if ($payment_mode === 'stripe' || $payment_mode === 'both'): ?>
-    <div style="margin-top:10px;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
-      <div style="font-weight:900;margin-bottom:6px;">Pagamento online</div>
-      <div style="color:#444;font-size:14px;line-height:1.4;">
-        Pagamento con carta (Stripe) previsto, ma non ancora attivo su questa versione.
-          <div style="margin-top:10px;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
+ <?php if ($payment_mode === 'stripe' || $payment_mode === 'both'): ?>
+  <div style="margin-top:10px;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
     <div style="font-weight:900;margin-bottom:6px;">Pagamento online</div>
 
     <div style="color:#444;font-size:14px;line-height:1.4;margin-bottom:10px;">
@@ -716,29 +734,8 @@ $has_manual_info = ($instr_raw !== '');
       (In arrivo: pagamento con carta e ricevuta automatica)
     </div>
   </div>
-
-      </div>
-    </div>
-  <?php endif; ?>
-
 <?php endif; ?>
-
-
-<?php
-$payment_mode = (string)($race['payment_mode'] ?? 'manual');
-if (!in_array($payment_mode, ['manual','stripe','both'], true)) $payment_mode = 'manual';
-
-$instr_raw = trim((string)($race['payment_instructions'] ?? ''));
-if ($instr_raw === '') {
-  $iban = trim((string)($race['organizer_iban'] ?? ''));
-  if ($iban !== '') {
-    $race_title = trim((string)($race['title'] ?? ''));
-    $instr_raw = "Bonifico bancario\nIBAN: {$iban}";
-    if ($race_title !== '') $instr_raw .= "\nCausale: Iscrizione - {$race_title}";
-  }
-}
-$has_manual_info = ($instr_raw !== '');
-?>
+<?php endif; ?>
 
 
 <nav style="margin:10px 0 12px;">
@@ -788,6 +785,11 @@ $has_manual_info = ($instr_raw !== '');
 <?php endif; ?>
 
 <h2>Iscritti confermati</h2>
+
+<p style="color:#666;margin-top:-6px;font-size:13px;">
+  In elenco compaiono solo gli atleti con iscrizione <b>confermata</b> e <b>pagata</b>.
+</p>
+
 
 <p style="color:#555;margin-top:-6px;">
   Totale confermati: <b><?php echo (int)count($publicRegs); ?></b>
@@ -842,39 +844,48 @@ $has_manual_info = ($instr_raw !== '');
 <h2>Iscrizione</h2>
 
 <?php if (!$logged): ?>
+
   <p>Per iscriverti devi accedere.</p>
   <p><a href="login.php">Accedi</a></p>
 
 <?php elseif (($role ?? '') !== 'athlete'): ?>
+
   <p>Sei loggato come <b><?php echo h($role); ?></b>. L’iscrizione è disponibile solo per account atleta.</p>
 
 <?php else: ?>
+
   <?php if (!$canRegister): ?>
-  <div style="padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;margin:10px 0;">
-    <div style="font-weight:900;margin-bottom:4px;">Iscrizioni chiuse</div>
-    <div style="color:#555;font-size:14px;">Al momento non è possibile inviare nuove iscrizioni per questa gara.</div>
-  </div>
-
-<?php elseif (!$profile_ok): ?>
-  <div style="padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;margin:10px 0;">
-    <div style="font-weight:900;margin-bottom:4px;">Profilo atleta incompleto</div>
-    <div style="color:#555;font-size:14px;margin-bottom:8px;">
-      Completa data di nascita e sesso per poterti iscrivere.
+    <div style="padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;margin:10px 0;">
+      <div style="font-weight:900;margin-bottom:4px;">Iscrizioni chiuse</div>
+      <div style="color:#555;font-size:14px;">
+        <?php if (!empty($is_closed_by_time) && !empty($race['close_at'])): ?>
+          Chiusura automatica: <?php echo h(it_datetime($race['close_at'] ?? null)); ?>.
+        <?php else: ?>
+          Al momento non è possibile inviare nuove iscrizioni per questa gara.
+        <?php endif; ?>
+      </div>
     </div>
-    <a href="athlete_profile.php" style="display:inline-block;padding:8px 12px;border:1px solid #ddd;border-radius:10px;text-decoration:none;">
-      Completa profilo atleta
-    </a>
-  </div>
 
+  <?php elseif (!$profile_ok): ?>
+    <div style="padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;margin:10px 0;">
+      <div style="font-weight:900;margin-bottom:4px;">Profilo atleta incompleto</div>
+      <div style="color:#555;font-size:14px;margin-bottom:8px;">
+        Completa data di nascita e sesso per poterti iscrivere.
+      </div>
+      <a href="athlete_profile.php" style="display:inline-block;padding:8px 12px;border:1px solid #ddd;border-radius:10px;text-decoration:none;">
+        Completa profilo atleta
+      </a>
+    </div>
 
   <?php else: ?>
 
     <?php $st = (string)($myReg['status'] ?? ''); ?>
 
     <?php if (!$myReg || $st === '' || $st === 'cancelled'): ?>
-  <p><small>Compila e conferma per inviare la richiesta di iscrizione.</small></p>
-  <form method="post">
 
+      <p><small>Compila e conferma per inviare la richiesta di iscrizione.</small></p>
+
+      <form method="post">
         <input type="hidden" name="action" value="register">
 
         <?php if ($hasDivisions): ?>
@@ -891,78 +902,19 @@ $has_manual_info = ($instr_raw !== '');
           </div>
         <?php endif; ?>
 
-        <button type="submit" style="padding:10px 14px;">Iscriviti</button>
+        <button type="submit" style="padding:10px 14px;" <?php echo $canRegister ? '' : 'disabled'; ?>>
+          Iscriviti
+        </button>
       </form>
 
     <?php else: ?>
+
       <p style="margin-top:6px;color:#555;">
-  <?php echo h(it_myreg_help(
-    (string)($myReg['status'] ?? ''),
-    (string)($myReg['payment_status'] ?? '')
-  )); ?>
-</p>
-
-
-
-
-<?php if (!empty($myReg)): ?>
-  <?php
-    $st = (string)($myReg['status'] ?? '');
-    $ps = (string)($myReg['payment_status'] ?? '');
-
-    // Badge styles coerenti
-    $badgeBase = "display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;border:1px solid #ddd;font-weight:900;font-size:12px;line-height:1;background:#111;color:#fff;";
-$badgeSoft = "display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;border:1px solid #ddd;font-weight:800;font-size:12px;line-height:1;background:#fff;color:#555;";
-$badgePaid = "display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;border:1px solid #ddd;font-weight:900;font-size:12px;line-height:1;background:#f2f2f2;color:#111;";
-  ?>
-
-  <div style="margin-top:6px;">
-    <div style="font-size:12px;color:#666;">La tua iscrizione</div>
-
-    <div style="margin:6px 0;font-size:14px;color:#555;">
-      Stato iscrizione:
-    </div>
-
-    <!-- BADGE ROW -->
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px;">
-
-      <!-- Stato -->
-      <span style="<?php echo $badgeBase; ?>">
-        <?php echo h(it_status($st)); ?>
-      </span>
-
-      <!-- Motivo -->
-      <?php if (!empty($myReg['status_reason'] ?? '')): ?>
-        <span style="<?php echo $badgeSoft; ?>">
-          <?php echo h(it_reason((string)$myReg['status_reason'])); ?>
-        </span>
-      <?php endif; ?>
-
-      <!-- Pagamento -->
-      <?php if (!empty($ps)): ?>
-        <span style="<?php echo ($ps === 'paid') ? $badgePaid : $badgeSoft; ?>">
-          <?php echo h(($ps === 'paid') ? 'Pagato' : 'Non pagato'); ?>
-        </span>
-      <?php endif; ?>
-
-    </div>
-
-    <!-- HELP TEXT -->
-    <div style="margin-top:6px;color:#555;font-size:13px;">
-      <?php echo h(it_myreg_help($st, $ps)); ?>
-    </div>
-
-    <!-- Data -->
-    <?php if (!empty($myReg['created_at'] ?? '')): ?>
-      <div style="margin-top:4px;font-size:12px;color:#777;">
-        Registrata il <?php echo h(it_datetime($myReg['created_at'] ?? null)); ?>
-      </div>
-    <?php endif; ?>
-  </div>
-<?php endif; ?>
-
-
-
+        <?php echo h(it_myreg_help(
+          (string)($myReg['status'] ?? ''),
+          (string)($myReg['payment_status'] ?? '')
+        )); ?>
+      </p>
 
       <?php if ($st === 'pending' || $st === 'confirmed'): ?>
         <form method="post" onsubmit="return confirm('Vuoi annullare l’iscrizione?');">
@@ -974,6 +926,7 @@ $badgePaid = "display:inline-flex;align-items:center;gap:6px;padding:6px 12px;bo
     <?php endif; ?>
 
   <?php endif; ?>
+
 <?php endif; ?>
 
 <?php page_footer(); ?>

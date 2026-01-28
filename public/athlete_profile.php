@@ -341,96 +341,108 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     I campi con * sono necessari per iscriversi alle gare.
   </div>
 
-    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
-      <div>
-        <label>Nome *</label>
-        <input class="form-control" name="first_name" value="<?=h((string)$form['first_name'])?>" required>
-      </div>
+    <div style="display:grid; grid-template-columns: 1fr; gap:12px;">
+  <style>
+    @media (min-width: 768px) {
+      .grid-2 { grid-template-columns: 1fr 1fr !important; }
+      .span-all { grid-column: 1 / -1; }
+    }
+  </style>
 
-      <div>
-        <label>Cognome *</label>
-        <input class="form-control" name="last_name" value="<?=h((string)$form['last_name'])?>" required>
-      </div>
-</div>
-      <label>Data di nascita *</label>
-<input type="date" class="form-control" name="birth_date" value="<?=h((string)$form['birth_date'])?>" required>
+  <div class="grid-2" style="display:grid; grid-template-columns: 1fr; gap:12px;">
+    <div>
+      <label class="form-label">Nome *</label>
+      <input class="form-control" name="first_name" value="<?=h((string)$form['first_name'])?>" required>
+    </div>
 
+    <div>
+      <label class="form-label">Cognome *</label>
+      <input class="form-control" name="last_name" value="<?=h((string)$form['last_name'])?>" required>
+    </div>
 
-      <div>
-        <label>Sesso *</label>
-        <select class="form-select" name="gender" required>
-          <option value="M" <?=($form['gender']==='M'?'selected':'')?>>M</option>
-          <option value="F" <?=($form['gender']==='F'?'selected':'')?>>F</option>
-        </select>
-      </div>
+    <div>
+      <label class="form-label">Data di nascita *</label>
+      <input type="date" class="form-control" name="birth_date" value="<?=h((string)$form['birth_date'])?>" required>
+    </div>
 
-      <div>
-        <label>E-mail *</label>
-        <input class="form-control" value="<?=h($email)?>" readonly>
-        <div class="small text-muted">È l’email usata per l’accesso.</div>
-      </div>
+    <div>
+      <label class="form-label">Sesso *</label>
+      <select class="form-select" name="gender" required>
+        <option value="M" <?=($form['gender']==='M'?'selected':'')?>>M</option>
+        <option value="F" <?=($form['gender']==='F'?'selected':'')?>>F</option>
+      </select>
+    </div>
 
-      <div>
-        <label>Taglia maglietta *</label>
-        <input class="form-control" name="shirt_size" value="<?=h((string)$form['shirt_size'])?>" placeholder="S / M / L" required>
-      </div>
+    <div>
+      <label class="form-label">E-mail *</label>
+      <input class="form-control" value="<?=h($email)?>" readonly>
+      <div class="small text-muted">È l’email usata per l’accesso.</div>
+    </div>
 
-      <div>
-        <label>Ente tessera *</label>
-        <select class="form-select" name="primary_membership_federation_code" required>
-          <?php foreach (['FCI','ACSI','FIDAL','UISP','CSI'] as $o): ?>
-            <option value="<?=$o?>" <?=($form['primary_membership_federation_code']===$o?'selected':'')?>>
-              <?=$o?>
-            </option>
-          <?php endforeach; ?>
-        </select>
-      </div>
+    <div>
+      <label class="form-label">Telefono mobile *</label>
+      <input class="form-control" name="phone_mobile" value="<?=h((string)$form['phone_mobile'])?>" required>
+    </div>
 
-      <div>
-        <label>Team / Club</label>
-        <input class="form-control" name="club_name" value="<?=h((string)$form['club_name'])?>" placeholder="Es. ASD Example Team">
-      </div>
+    <div>
+      <label class="form-label">Codice fiscale *</label>
+      <input class="form-control" name="tax_code" value="<?=h((string)$form['tax_code'])?>" required>
+    </div>
 
-      <div>
-        <label>Nr tessera *</label>
-        <input class="form-control" name="primary_membership_number" value="<?=h((string)$form['primary_membership_number'])?>" required>
-        <div style="margin-top:8px;">
-          <a class="btn btn-outline-secondary btn-sm" href="athlete_memberships.php">Gestisci tesseramenti aggiuntivi</a>
-        </div>
-      </div>
+    <div>
+      <label class="form-label">Taglia maglietta *</label>
+      <input class="form-control" name="shirt_size" value="<?=h((string)$form['shirt_size'])?>" placeholder="S / M / L" required>
+    </div>
 
-      <div>
-        <label>CAP *</label>
-        <input class="form-control" name="cap" value="<?=h((string)$form['cap'])?>" required>
-      </div>
+    <div>
+      <label class="form-label">Ente tessera *</label>
+      <select class="form-select" name="primary_membership_federation_code" required>
+        <?php foreach (['FCI','ACSI','FIDAL','UISP','CSI'] as $o): ?>
+          <option value="<?=$o?>" <?=($form['primary_membership_federation_code']===$o?'selected':'')?>>
+            <?=$o?>
+          </option>
+        <?php endforeach; ?>
+      </select>
+    </div>
 
-      <div>
-        <label>Città *</label>
-        <input class="form-control" name="city" value="<?=h((string)$form['city'])?>" required>
-      </div>
-
-      <div>
-        <label>Codice fiscale *</label>
-        <input class="form-control" name="tax_code" value="<?=h((string)$form['tax_code'])?>" required>
-      </div>
-
-      <div>
-        <label>Telefono mobile *</label>
-        <input class="form-control" name="phone_mobile" value="<?=h((string)$form['phone_mobile'])?>" required>
-      </div>
-
-      <label>Data certificato medico *</label>
-<input type="date" class="form-control" name="medical_cert_date" value="<?=h((string)$form['medical_cert_date'])?>" required>
-
-
-      <div>
-        <label>Tipo certificato *</label>
-        <select class="form-select" name="medical_cert_type" required>
-          <option value="AGONISTICO" <?=($form['medical_cert_type']==='AGONISTICO'?'selected':'')?>>Agonistico</option>
-          <option value="NON_AGONISTICO" <?=($form['medical_cert_type']==='NON_AGONISTICO'?'selected':'')?>>Non agonistico</option>
-        </select>
+    <div>
+      <label class="form-label">Nr tessera *</label>
+      <input class="form-control" name="primary_membership_number" value="<?=h((string)$form['primary_membership_number'])?>" required>
+      <div style="margin-top:8px;">
+        <a class="btn btn-outline-secondary btn-sm" href="athlete_memberships.php">Gestisci tesseramenti aggiuntivi</a>
       </div>
     </div>
+
+    <div>
+      <label class="form-label">Team / Club</label>
+      <input class="form-control" name="club_name" value="<?=h((string)$form['club_name'])?>" placeholder="Es. ASD Example Team">
+    </div>
+
+    <div>
+      <label class="form-label">CAP *</label>
+      <input class="form-control" name="cap" value="<?=h((string)$form['cap'])?>" required>
+    </div>
+
+    <div>
+      <label class="form-label">Città *</label>
+      <input class="form-control" name="city" value="<?=h((string)$form['city'])?>" required>
+    </div>
+
+    <div>
+      <label class="form-label">Data certificato medico *</label>
+      <input type="date" class="form-control" name="medical_cert_date" value="<?=h((string)$form['medical_cert_date'])?>" required>
+    </div>
+
+    <div>
+      <label class="form-label">Tipo certificato *</label>
+      <select class="form-select" name="medical_cert_type" required>
+        <option value="AGONISTICO" <?=($form['medical_cert_type']==='AGONISTICO'?'selected':'')?>>Agonistico</option>
+        <option value="NON_AGONISTICO" <?=($form['medical_cert_type']==='NON_AGONISTICO'?'selected':'')?>>Non agonistico</option>
+      </select>
+    </div>
+  </div>
+</div>
+
 
     <h3 style="margin-top:18px;">Dati facoltativi</h3>
 
@@ -469,32 +481,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
       </div>
     </div>
-    <?php if (!empty($existing['medical_cert_valid_until'])): ?>
-  <div class="small text-muted">
+   <?php if (!empty($existing['medical_cert_valid_until'])): ?>
+  
+<?php endif; ?>
+
+</div><!-- /card Dati facoltativi -->
+<?php if (!empty($existing['medical_cert_valid_until'])): ?>
+  <div class="small text-muted" style="margin-top:8px;">
     Valido fino al: <?=h((string)$existing['medical_cert_valid_until'])?>
-  </div>
   </div>
 <?php endif; ?>
 
+</div><!-- /card Dati facoltativi -->
 
-    <h3 style="margin-top:18px;">Consensi</h3>
+<h3 style="margin-top:18px;">Consensi</h3>
 
-    <div style="display:flex; flex-direction:column; gap:8px;">
-      <label>
-        <input type="checkbox" name="consent_privacy" value="1" <?=($form['consent_privacy'] ? 'checked' : '')?>>
-        Autorizzazione trattamento dati * (obbligatoria)
-      </label>
 
-      <label>
-        <input type="checkbox" name="consent_communications" value="1" <?=($form['consent_communications'] ? 'checked' : '')?>>
-        Autorizzo comunicazioni di servizio
-      </label>
 
-      <label>
-        <input type="checkbox" name="consent_marketing" value="1" <?=($form['consent_marketing'] ? 'checked' : '')?>>
-        Autorizzo marketing
-      </label>
-    </div>
+<div style="padding:14px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
+  <div class="form-check" style="padding:10px;border-radius:8px;">
+    <input
+      class="form-check-input"
+      type="checkbox"
+      id="consent_privacy"
+      name="consent_privacy"
+      value="1"
+      <?=($form['consent_privacy'] ? 'checked' : '')?>
+      required
+    >
+    <label class="form-check-label" for="consent_privacy">
+      Autorizzazione trattamento dati * (obbligatoria)
+    </label>
+  </div>
+
+  <div class="form-check" style="margin-bottom:10px;">
+    <input
+      class="form-check-input"
+      type="checkbox"
+      id="consent_communications"
+      name="consent_communications"
+      value="1"
+      <?=($form['consent_communications'] ? 'checked' : '')?>
+    >
+    <label class="form-check-label" for="consent_communications">
+      Autorizzo comunicazioni di servizio
+    </label>
+  </div>
+
+  <div class="form-check">
+    <input
+      class="form-check-input"
+      type="checkbox"
+      id="consent_marketing"
+      name="consent_marketing"
+      value="1"
+      <?=($form['consent_marketing'] ? 'checked' : '')?>
+    >
+    <label class="form-check-label" for="consent_marketing">
+      Autorizzo marketing
+    </label>
+  </div>
+</div>
+
 
   <div style="height:72px;"></div> <!-- spacer per la barra sticky -->
 
