@@ -42,13 +42,27 @@ page_header($pageTitle);
   · <a href="race_new.php?event_id=<?php echo (int)$event['id']; ?>">+ Nuova gara</a>
 </p>
 
+<?php if (($event['event_type'] ?? 'event') === 'championship'): ?>
+  <p>
+    <a href="championship_detail.php?event_id=<?php echo (int)$event['id']; ?>">
+      🏆 Gestione campionato
+    </a>
+  </p>
+<?php endif; ?>
+
+
 <p>
   <b>Periodo:</b>
   <?php echo h(it_date($event['starts_on'] ?? '')); ?>
   →
   <?php echo h(it_date($event['ends_on'] ?? '')); ?>
   · <b>Stato:</b> <?php echo h(label_status($event['status'] ?? '')); ?>
+
+  <?php if (($event['event_type'] ?? 'event') === 'championship'): ?>
+    · <b style="color:#8a5a00;">🏆 Campionato</b>
+  <?php endif; ?>
 </p>
+
 
 
 <?php if (!empty($event['description'])): ?>

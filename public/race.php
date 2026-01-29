@@ -129,6 +129,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $action = (string)($_POST['action'] ?? '');
   $reg_id = (int)($_POST['reg_id'] ?? 0);
 
+
+     // ======================================================
+  // ARCHIVIA GARA (soft delete) - solo manage
+  // ======================================================
+  if ($action === 'archive_race' && can_manage()) {
+
+    $rid = (int)($race['id'] ?? 0);
+    if ($rid <= 0) {
+      $error = 'ID gara non valido.';
+    } else {
+
+      $stmtA = $conn->prepare("
+        UPDATE races
+        SET is_archived=1, archived_at=NOW(), status='archived'
+        WHERE id=? LIMIT 1
+      ");
+      if ($stmtA) {
+        $stmtA->bind_param("i", $rid);
+        $ok = $stmtA->execute();
+        $stmtA->close();
+      } else {
+        $ok = false;
+      }
+
+      if (!$ok) {
+        $error = 'Errore archiviazione gara.';
+      } else {
+
+        // audit coerente con il resto del file
+        audit_log(
+          $conn,
+          'RACE_ARCHIVE',
+          'race',
+          (int)$rid,
+          null,
+          [
+            'race_id'          => (int)$rid,
+            'organization_id'  => (int)($race['organization_id'] ?? 0),
+            'after'            => ['status' => 'archived', 'is_archived' => 1]
+          ]
+        );
+
+        header("Location: event_detail.php?id=".(int)($race['event_id'] ?? 0));
+        exit;
+      }
+    }
+  }
+
+
+
   // ======================================================
   // ANNULLA iscrizione (admin/organizer) - per reg_id
   // ======================================================
@@ -526,15 +576,34 @@ page_header($pageTitle);
   <b>Disciplina:</b> <?php echo h(label_discipline($race['discipline'] ?? '')); ?><br>
   <b>Quota:</b> € <?php echo h(cents_to_eur((int)$fee_total_cents_preview)); ?><br>
   <b>Stato gara:</b> <?php echo h(label_status($race['status'] ?? '')); ?>
+  <?php if (!empty($race['is_archived'])): ?><br><b>Archiviata:</b> Sì<?php endif; ?>
 </p>
 
 
-<div style="margin:10px 0 16px;">
+<div style="margin:10px 0 16px; display:flex; gap:10px; align-items:center;">
   <a href="race_edit.php?id=<?php echo (int)$race_id; ?>"
      style="display:inline-block;padding:8px 12px;border:1px solid #ccc;text-decoration:none;">
     ✏️ Modifica gara
   </a>
+
+  <?php if (can_manage()): ?>
+    <form method="post" style="margin:0;">
+    <?php if (can_manage() && empty($race['is_archived'])): ?>
+  <form method="post" style="margin:0;">
+    <input type="hidden" name="action" value="archive_race">
+    <button type="submit"
+            style="padding:8px 12px;border:1px solid #d00;background:#fff;color:#d00;cursor:pointer;"
+            onclick="return confirm('Archiviare questa gara? Non sarà più visibile al pubblico.');">
+      📦 Archivia gara
+    </button>
+  </form>
+<?php endif; ?>
+
+      </button>
+    </form>
+  <?php endif; ?>
 </div>
+
 
 <?php if ($error): ?>
   <div style="padding:12px;background:#ffecec;border:1px solid #ffb3b3;margin:12px 0;">

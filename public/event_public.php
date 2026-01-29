@@ -42,6 +42,7 @@ $stmt = $conn->prepare("
   SELECT id,title,location,start_at,discipline,status
   FROM races
   WHERE event_id=?
+    AND COALESCE(is_archived,0)=0
   ORDER BY
     CASE WHEN start_at IS NULL OR start_at='' THEN 1 ELSE 0 END,
     start_at ASC,

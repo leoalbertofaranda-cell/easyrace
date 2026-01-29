@@ -122,6 +122,13 @@ if (!$race) {
   exit("Gara non trovata (o evento non pubblicato).");
 }
 
+// Gara archiviata → non visibile al pubblico
+if (!empty($race['is_archived'])) {
+  header("HTTP/1.1 404 Not Found");
+  exit("Gara non disponibile.");
+}
+
+
 // Ruolo/loggato
 $role   = function_exists('current_role') ? (string)current_role() : '';
 $logged = !empty($role);
@@ -320,30 +327,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
           }
         }
 
-        // 4) fee (UNA SOLA VERITÀ)
-        [$tier_code_db, $tier_label_db, $base_fee_cents] = race_fee_pick_tier($race);
+     // 4) fee (UNA SOLA VERITÀ + override campionato)
+$admin_user_id = (int)($race['admin_user_id'] ?? 0);
 
-        $platform_settings = get_platform_settings($conn);
-        echo "<pre>"; var_dump($platform_settings); echo "</pre>"; exit;
+// user_id atleta: qui DEVE essere quello loggato
+$user_id = (int)($u['id'] ?? 0);
 
-        $admin_user_id     = (int)($race['admin_user_id'] ?? 0);
-        $admin_settings    = get_admin_settings($conn, $admin_user_id);
+$fees = compute_fees_for_race($conn, $race, $user_id, $admin_user_id);
 
-        $fees = calc_fees_total((int)$base_fee_cents, $platform_settings, $admin_settings);
+$tier_code_db            = (string)($fees['tier_code'] ?? '');
+$tier_label_db           = (string)($fees['tier_label'] ?? '');
+$base_fee_cents_db       = (int)($fees['race_fee_cents'] ?? 0);
+$platform_fee_cents_db   = (int)($fees['platform_fee_cents'] ?? 0);
+$admin_fee_cents_db      = (int)($fees['admin_fee_cents'] ?? 0);
+$fee_total_cents_db      = (int)($fees['total_cents'] ?? 0);
+$rounding_delta_cents_db = (int)($fees['rounding_delta_cents'] ?? 0);
 
-        $base_fee_cents_db       = (int)($fees['race_fee_cents'] ?? 0);
-        $platform_fee_cents_db   = (int)($fees['platform_fee_cents'] ?? 0);
-        $admin_fee_cents_db      = (int)($fees['admin_fee_cents'] ?? 0);
-        $fee_total_cents_db      = (int)($fees['total_cents'] ?? 0);
-        $rounding_delta_cents_db = (int)($fees['rounding_delta_cents'] ?? 0);
+// organizer net: per ora = base fee
+$organizer_net_cents_db  = $base_fee_cents_db;
 
-        // organizer net: per ora = base fee
-        $organizer_net_cents_db  = $base_fee_cents_db;
+// sinonimi
+$fee_race_cents_db       = $base_fee_cents_db;
+$fee_platform_cents_db   = $platform_fee_cents_db;
+$fee_admin_cents_db      = $admin_fee_cents_db;
 
-        // sinonimi
-        $fee_race_cents_db       = $base_fee_cents_db;
-        $fee_platform_cents_db   = $platform_fee_cents_db;
-        $fee_admin_cents_db      = $admin_fee_cents_db;
 
         // 5) division (default NULL)
         $division_id_db    = null;
@@ -385,62 +392,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
         }
 
         // 6) UPSERT
-        $stmt = $conn->prepare("
-          INSERT INTO registrations (
-            race_id, user_id,
-            status, status_reason, payment_status, confirmed_at,
-            base_fee_cents, platform_fee_cents, admin_fee_cents,
-            rounding_delta_cents, fee_total_cents, organizer_net_cents,
-            paid_total_cents,
-            fee_race_cents, fee_platform_cents, fee_admin_cents,
-            fee_tier_code, fee_tier_label,
-            category_code, category_label,
-            division_id, division_code, division_label
-          ) VALUES (
-            ?, ?,
-            ?, ?, ?, ?,
-            ?, ?, ?,
-            ?, ?, ?,
-            ?,
-            ?, ?, ?,
-            ?, ?,
-            ?, ?,
-            ?, ?, ?
-          )
-          ON DUPLICATE KEY UPDATE
-            status = VALUES(status),
-            status_reason = VALUES(status_reason),
-            payment_status = VALUES(payment_status),
-            confirmed_at = VALUES(confirmed_at),
-            base_fee_cents = VALUES(base_fee_cents),
-            platform_fee_cents = VALUES(platform_fee_cents),
-            admin_fee_cents = VALUES(admin_fee_cents),
-            rounding_delta_cents = VALUES(rounding_delta_cents),
-            fee_total_cents = VALUES(fee_total_cents),
-            organizer_net_cents = VALUES(organizer_net_cents),
-            paid_total_cents = VALUES(paid_total_cents),
-            fee_race_cents = VALUES(fee_race_cents),
-            fee_platform_cents = VALUES(fee_platform_cents),
-            fee_admin_cents = VALUES(fee_admin_cents),
-            fee_tier_code = VALUES(fee_tier_code),
-            fee_tier_label = VALUES(fee_tier_label),
-            category_code = VALUES(category_code),
-            category_label = VALUES(category_label),
-            division_id = VALUES(division_id),
-            division_code = VALUES(division_code),
-            division_label = VALUES(division_label)
-        ");
-        if (!$stmt) {
-          throw new RuntimeException("Errore DB (prepare): " . h($conn->error));
-        }
+       $sql = "
+  INSERT INTO registrations (
+    race_id, user_id,
+    status, status_reason, payment_status, confirmed_at,
+    base_fee_cents, platform_fee_cents, admin_fee_cents,
+    rounding_delta_cents, fee_total_cents, organizer_net_cents,
+    paid_total_cents,
+    fee_race_cents, fee_platform_cents, fee_admin_cents,
+    fee_tier_code, fee_tier_label,
+    category_code, category_label,
+    division_id, division_code, division_label
+  ) VALUES (
+    ?, ?,
+    ?, ?, ?, ?,
+    ?, ?, ?,
+    ?, ?, ?,
+    ?,
+    ?, ?, ?,
+    ?, ?,
+    ?, ?,
+    NULLIF(?,0), ?, ?
+  )
+  ON DUPLICATE KEY UPDATE
+    status = VALUES(status),
+    status_reason = VALUES(status_reason),
+    payment_status = VALUES(payment_status),
+    confirmed_at = VALUES(confirmed_at),
+    base_fee_cents = VALUES(base_fee_cents),
+    platform_fee_cents = VALUES(platform_fee_cents),
+    admin_fee_cents = VALUES(admin_fee_cents),
+    rounding_delta_cents = VALUES(rounding_delta_cents),
+    fee_total_cents = VALUES(fee_total_cents),
+    organizer_net_cents = VALUES(organizer_net_cents),
+    paid_total_cents = VALUES(paid_total_cents),
+    fee_race_cents = VALUES(fee_race_cents),
+    fee_platform_cents = VALUES(fee_platform_cents),
+    fee_admin_cents = VALUES(fee_admin_cents),
+    fee_tier_code = VALUES(fee_tier_code),
+    fee_tier_label = VALUES(fee_tier_label),
+    category_code = VALUES(category_code),
+    category_label = VALUES(category_label),
+    division_id = VALUES(division_id),
+    division_code = VALUES(division_code),
+    division_label = VALUES(division_label)
+";
+$stmt = $conn->prepare($sql);
 
-       // sicurezza: mysqli non digerisce NULL sugli "i"
+
+ // sicurezza: mysqli non digerisce NULL sugli "i"
 if ($division_id_db === null) $division_id_db = 0;
+
+$user_id = (int)($u['id'] ?? 0);
 
 $stmt->bind_param(
   "iissssiiiiiiiiiissssiss",
   $race_id,
-  $u['id'],
+  $user_id,
   $status_db,
   $status_reason_db,
   $payment_status_db,
@@ -461,16 +469,19 @@ $stmt->bind_param(
   $cat_label_db,
   $division_id_db,
   $division_code_db,
-  $division_label_db,
-  $close_at
+  $division_label_db
 );
 
 
-        if (!$stmt->execute()) {
-          $msg = $stmt->error ?: $conn->error;
-          $stmt->close();
-          throw new RuntimeException("Errore DB (execute): " . h($msg));
-        }
+
+
+
+       if (!$stmt->execute()) {
+  $msg = $stmt->error ?: $conn->error;
+  $stmt->close();
+  throw new RuntimeException($msg);
+}
+
         $stmt->close();
 
         // recupero reg_id

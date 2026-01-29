@@ -185,6 +185,135 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
   // ... qui sotto lasci invariato: controlli regex, calcolo validità, upload, INSERT/UPDATE, success, refresh session ...
 }
+
+  if ($error === '') {
+    try {
+
+      // calcolo validità certificato (+365 giorni) se c'è la data
+      $medical_valid_until = null;
+      if ($form['medical_cert_date'] !== '') {
+        $dt = DateTime::createFromFormat('Y-m-d', $form['medical_cert_date']);
+        if ($dt) {
+          $dt->modify('+365 days');
+          $medical_valid_until = $dt->format('Y-m-d');
+        }
+      }
+
+      // file upload (se lo gestisci già altrove, lascia pure com'è)
+      $medical_cert_file = $existing['medical_cert_file'] ?? null;
+
+      // UPSERT profilo
+      $sql = "
+        INSERT INTO athlete_profile (
+          user_id,
+          first_name, last_name, birth_date, gender,
+          shirt_size, pants_size, shoe_size,
+          address_residence, cap, city,
+          tax_code, phone_mobile, phone_landline,
+          primary_membership_federation_code, primary_membership_number,
+          club_name,
+          medical_cert_date, medical_cert_type,
+          medical_cert_valid_until, medical_cert_file,
+          consent_privacy, consent_communications, consent_marketing
+        ) VALUES (
+          ?,
+          ?, ?, ?, ?,
+          ?, ?, ?,
+          ?, ?, ?,
+          ?, ?, ?,
+          ?, ?,
+          ?,
+          ?, ?,
+          ?, ?,
+          ?, ?, ?
+        )
+        ON DUPLICATE KEY UPDATE
+          first_name = VALUES(first_name),
+          last_name  = VALUES(last_name),
+          birth_date = VALUES(birth_date),
+          gender     = VALUES(gender),
+          shirt_size = VALUES(shirt_size),
+          pants_size = VALUES(pants_size),
+          shoe_size  = VALUES(shoe_size),
+          address_residence = VALUES(address_residence),
+          cap   = VALUES(cap),
+          city  = VALUES(city),
+          tax_code = VALUES(tax_code),
+          phone_mobile = VALUES(phone_mobile),
+          phone_landline = VALUES(phone_landline),
+          primary_membership_federation_code = VALUES(primary_membership_federation_code),
+          primary_membership_number = VALUES(primary_membership_number),
+          club_name = VALUES(club_name),
+          medical_cert_date = VALUES(medical_cert_date),
+          medical_cert_type = VALUES(medical_cert_type),
+          medical_cert_valid_until = VALUES(medical_cert_valid_until),
+          medical_cert_file = VALUES(medical_cert_file),
+          consent_privacy = VALUES(consent_privacy),
+          consent_communications = VALUES(consent_communications),
+          consent_marketing = VALUES(consent_marketing)
+      ";
+
+      $stmt = $conn->prepare($sql);
+      if (!$stmt) throw new RuntimeException("prepare failed: " . $conn->error);
+
+      // bind: 1 i + 20 s + 3 i  (contiamo: user_id i, poi tante stringhe, poi consensi i,i,i)
+      $stmt->bind_param(
+        "issssssssssssssssssssiii",
+        $user_id,
+        $form['first_name'],
+        $form['last_name'],
+        $form['birth_date'],
+        $form['gender'],
+        $form['shirt_size'],
+        $form['pants_size'],
+        $form['shoe_size'],
+        $form['address_residence'],
+        $form['cap'],
+        $form['city'],
+        $form['tax_code'],
+        $form['phone_mobile'],
+        $form['phone_landline'],
+        $form['primary_membership_federation_code'],
+        $form['primary_membership_number'],
+        $form['club_name'],
+        $form['medical_cert_date'],
+        $form['medical_cert_type'],
+        $medical_valid_until,
+        $medical_cert_file,
+        $form['consent_privacy'],
+        $form['consent_communications'],
+        $form['consent_marketing']
+      );
+
+      if (!$stmt->execute()) {
+        $msg = $stmt->error ?: $conn->error;
+        $stmt->close();
+        throw new RuntimeException($msg);
+      }
+      $stmt->close();
+
+      // aggiorna sessione (quella che ti serve per race.php)
+      $_SESSION['auth']['birth_date'] = $form['birth_date'];
+      $_SESSION['auth']['gender']     = $form['gender'];
+
+      $success = "Profilo salvato.";
+
+      // ricarica $existing per mostrare i dati appena salvati
+      $stmt = $conn->prepare("SELECT * FROM athlete_profile WHERE user_id=? LIMIT 1");
+      $stmt->bind_param("i", $user_id);
+      $stmt->execute();
+      $existing = $stmt->get_result()->fetch_assoc();
+      $stmt->close();
+
+    } catch (Throwable $e) {
+      $error = "Salvataggio non riuscito: " . $e->getMessage();
+    }
+  }
+
+
+
+
+
 ?>
 <!doctype html>
 <html lang="it">
