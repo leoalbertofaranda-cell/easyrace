@@ -10,6 +10,11 @@ require_once __DIR__ . '/../app/includes/fees.php';
 require_once __DIR__ . '/../app/includes/audit.php';
 
 $conn = db($config);
+$profile_membership = null; // sempre definita, ovunque nel file
+
+function dbg_stmt(string $label): void {
+  error_log("DBG_STMT: {$label}");
+}
 
 // ======================================================
 // Traduzioni UI (public)
@@ -56,10 +61,6 @@ function it_reason(string $r): string {
 }
 
 function it_myreg_help(string $status, string $payment): string {
-  // Regola di prodotto (come già implementato):
-  // - quando ti iscrivi -> pending + unpaid
-  // - l'organizzatore/admin conferma
-  // - solo confirmed+paid appare nella lista pubblica
   if ($status === 'cancelled') return "Iscrizione annullata. Puoi iscriverti di nuovo finché le iscrizioni sono aperte.";
   if ($status === 'blocked')   return "Iscrizione bloccata: contatta l’organizzazione.";
   if ($status === 'pending')   return "Iscrizione registrata. In attesa di verifica e conferma da parte dell’organizzazione.";
@@ -67,7 +68,6 @@ function it_myreg_help(string $status, string $payment): string {
   if ($status === 'confirmed' && $payment === 'paid') return "Iscrizione confermata e pagata: sei presente nell’elenco pubblico dei partecipanti.";
   return "Stato iscrizione aggiornato.";
 }
-
 
 function reason_hint(string $r): string {
   return match ($r) {
@@ -79,7 +79,6 @@ function reason_hint(string $r): string {
     default                  => '',
   };
 }
-
 
 function it_payment(string $p): string {
   return match ($p) {
@@ -103,7 +102,6 @@ function it_race_status(string $s): string {
 $race_id = (int)($_GET['id'] ?? 0);
 if ($race_id <= 0) { header("Location: calendar.php"); exit; }
 
-// Carico gara + evento + org (PUBBLICO)
 $stmt = $conn->prepare("
   SELECT r.*, e.title AS event_title, e.id AS event_id, o.name AS org_name, e.status AS event_status, e.organization_id
   FROM races r
@@ -122,12 +120,34 @@ if (!$race) {
   exit("Gara non trovata (o evento non pubblicato).");
 }
 
-// Gara archiviata → non visibile al pubblico
+// ======================================================
+// Campionato: verifica se la gara è collegata a un campionato
+// ======================================================
+$championship_id = null;
+
+$stmtC = $conn->prepare("
+  SELECT championship_id
+  FROM championship_races
+  WHERE race_id = ?
+  LIMIT 1
+");
+$stmtC->bind_param("i", $race_id);
+$stmtC->execute();
+$resC = $stmtC->get_result();
+if ($rowC = $resC->fetch_assoc()) {
+  $championship_id = (int)$rowC['championship_id'];
+}
+$stmtC->close();
+
+$membership_number = null;
+if ($championship_id) {
+  $membership_number = isset($_POST['membership_number']) ? trim((string)$_POST['membership_number']) : null;
+}
+
 if (!empty($race['is_archived'])) {
   header("HTTP/1.1 404 Not Found");
   exit("Gara non disponibile.");
 }
-
 
 // Ruolo/loggato
 $role   = function_exists('current_role') ? (string)current_role() : '';
@@ -145,10 +165,7 @@ $now_ts   = time();
 $close_ts = (!empty($race['close_at'])) ? strtotime((string)$race['close_at']) : 0;
 
 $is_closed_by_time = ($close_ts > 0 && $now_ts > $close_ts);
-
-// Iscrizioni consentite solo se gara open E non oltre close_at
 $canRegister = (($race['status'] ?? '') === 'open') && !$is_closed_by_time;
-
 
 // ======================================================
 // Divisioni gara (solo lettura)
@@ -175,9 +192,9 @@ $hasDivisions = !empty($raceDivisions);
 $publicRegs = [];
 $stmt = $conn->prepare("
   SELECT
-  r.user_id AS reg_user_id,
-  COALESCE(r.bib_number, '') AS bib_number,  
-  COALESCE(ap.first_name, '') AS first_name,
+    r.user_id AS reg_user_id,
+    COALESCE(r.bib_number, '') AS bib_number,
+    COALESCE(ap.first_name, '') AS first_name,
     COALESCE(ap.last_name,  '') AS last_name,
     COALESCE(ap.club_name,  '') AS club_name,
     COALESCE(ap.city,       '') AS city
@@ -197,18 +214,17 @@ $stmt->close();
 $myReg = null;
 if (($role ?? '') === 'athlete' && !empty($u['id'])) {
   $stmt = $conn->prepare("
-  SELECT
-  id,
-  user_id AS reg_user_id,
-  status, status_reason, payment_status, created_at,
-  fee_total_cents, paid_at,
-  fee_tier_label,
-  division_id, division_code, division_label
-FROM registrations
-WHERE race_id=? AND user_id=?
-LIMIT 1
-
-");
+    SELECT
+      id,
+      user_id AS reg_user_id,
+      status, status_reason, payment_status, created_at,
+      fee_total_cents, paid_at,
+      fee_tier_label,
+      division_id, division_code, division_label
+    FROM registrations
+    WHERE race_id=? AND user_id=?
+    LIMIT 1
+  ");
   $stmt->bind_param("ii", $race_id, $u['id']);
   $stmt->execute();
   $myReg = $stmt->get_result()->fetch_assoc();
@@ -219,8 +235,16 @@ LIMIT 1
 // Profilo atleta completo?
 // ======================================================
 $profile_ok = false;
+$profile_membership = null; // ✅ sempre definita
+
 if (($role ?? '') === 'athlete' && !empty($u['id'])) {
-  $stmt = $conn->prepare("SELECT birth_date, gender FROM athlete_profile WHERE user_id=? LIMIT 1");
+
+  // FIX: prima carico $ap, poi leggo i campi (prima era invertito)
+  $stmt = $conn->prepare("
+    SELECT birth_date, gender, primary_membership_number
+    FROM athlete_profile
+    WHERE user_id=? LIMIT 1
+  ");
   $stmt->bind_param("i", $u['id']);
   $stmt->execute();
   $ap = $stmt->get_result()->fetch_assoc();
@@ -228,6 +252,9 @@ if (($role ?? '') === 'athlete' && !empty($u['id'])) {
 
   $bd = (string)($ap['birth_date'] ?? '');
   $g  = strtoupper((string)($ap['gender'] ?? ''));
+
+  $profile_membership = trim((string)($ap['primary_membership_number'] ?? ''));
+  if ($profile_membership === '') $profile_membership = null;
 
   $profile_ok = ($bd !== '' && ($g === 'M' || $g === 'F'));
 }
@@ -242,6 +269,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
   } else {
 
     $action = (string)($_POST['action'] ?? '');
+    if ($action === 'preview_fee') {
+      // NON fare nulla: ricarichiamo la pagina con i dati POST
+    }
 
     // -------------------------
     // REGISTER
@@ -280,15 +310,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
         }
 
         // 2) profilo atleta (fonte unica)
-        $stmt = $conn->prepare("SELECT birth_date, gender FROM athlete_profile WHERE user_id=? LIMIT 1");
+        // FIX: eliminata la seconda execute su $stmt già chiuso (era la causa dell'errore "stmt already closed")
+        $stmt = $conn->prepare("
+          SELECT birth_date, gender, primary_membership_number
+          FROM athlete_profile
+          WHERE user_id=? LIMIT 1
+        ");
         $stmt->bind_param("i", $u['id']);
         $stmt->execute();
         $ap = $stmt->get_result()->fetch_assoc();
         $stmt->close();
 
         $birth_date = (string)($ap['birth_date'] ?? '');
-        $gender     = (string)($ap['gender'] ?? '');
-        if ($birth_date === '' || $gender === '') {
+        $gender     = strtoupper((string)($ap['gender'] ?? ''));
+
+        $profile_membership = trim((string)($ap['primary_membership_number'] ?? ''));
+        if ($profile_membership === '') $profile_membership = null;
+
+        $profile_ok = ($birth_date !== '' && ($gender === 'M' || $gender === 'F'));
+        if (!$profile_ok) {
           throw new RuntimeException("PROFILE_INCOMPLETE");
         }
 
@@ -327,30 +367,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($role ?? '') === 'athlete' && !emp
           }
         }
 
-     // 4) fee (UNA SOLA VERITÀ + override campionato)
-$admin_user_id = (int)($race['admin_user_id'] ?? 0);
+        // 4) fee (UNA SOLA VERITÀ: include campionato/tessera)
+        $admin_user_id = (int)($race['admin_user_id'] ?? 0);
 
-// user_id atleta: qui DEVE essere quello loggato
-$user_id = (int)($u['id'] ?? 0);
+        // user_id atleta: qui DEVE essere quello loggato
+        $user_id = (int)($u['id'] ?? 0);
 
-$fees = compute_fees_for_race($conn, $race, $user_id, $admin_user_id);
+        $membership_number = isset($_POST['membership_number'])
+          ? trim((string)$_POST['membership_number'])
+          : null;
+        if ($membership_number === '') $membership_number = null;
 
-$tier_code_db            = (string)($fees['tier_code'] ?? '');
-$tier_label_db           = (string)($fees['tier_label'] ?? '');
-$base_fee_cents_db       = (int)($fees['race_fee_cents'] ?? 0);
-$platform_fee_cents_db   = (int)($fees['platform_fee_cents'] ?? 0);
-$admin_fee_cents_db      = (int)($fees['admin_fee_cents'] ?? 0);
-$fee_total_cents_db      = (int)($fees['total_cents'] ?? 0);
-$rounding_delta_cents_db = (int)($fees['rounding_delta_cents'] ?? 0);
+        [$tier_code_db, $tier_label_db, $base_fee_cents_db, $is_member_db] =
+          race_fee_final($conn, $race, $championship_id, $membership_number);
 
-// organizer net: per ora = base fee
-$organizer_net_cents_db  = $base_fee_cents_db;
+        $platform_settings = get_platform_settings($conn);
+        $admin_settings    = get_admin_settings($conn, (int)($race['admin_user_id'] ?? 0));
+        $fees_tot          = calc_fees_total((int)$base_fee_cents_db, $platform_settings, $admin_settings);
 
-// sinonimi
-$fee_race_cents_db       = $base_fee_cents_db;
-$fee_platform_cents_db   = $platform_fee_cents_db;
-$fee_admin_cents_db      = $admin_fee_cents_db;
+        $platform_fee_cents_db   = (int)($fees_tot['platform_fee_cents'] ?? 0);
+        $admin_fee_cents_db      = (int)($fees_tot['admin_fee_cents'] ?? 0);
+        $fee_total_cents_db      = (int)($fees_tot['total_cents'] ?? 0);
+        $rounding_delta_cents_db = (int)($fees_tot['rounding_delta_cents'] ?? 0);
 
+        $organizer_net_cents_db  = (int)$base_fee_cents_db;
+
+        $fee_race_cents_db       = (int)$base_fee_cents_db;
+        $fee_platform_cents_db   = (int)$platform_fee_cents_db;
+        $fee_admin_cents_db      = (int)$admin_fee_cents_db;
+
+        // campionato/tessera da salvare in DB
+        $championship_id_db   = (int)($championship_id ?? 0);
+        $membership_number_db = $membership_number; // string|null
 
         // 5) division (default NULL)
         $division_id_db    = null;
@@ -391,98 +439,106 @@ $fee_admin_cents_db      = $admin_fee_cents_db;
           $division_label_db = (string)$d['label'];
         }
 
-        // 6) UPSERT
-       $sql = "
-  INSERT INTO registrations (
-    race_id, user_id,
-    status, status_reason, payment_status, confirmed_at,
-    base_fee_cents, platform_fee_cents, admin_fee_cents,
-    rounding_delta_cents, fee_total_cents, organizer_net_cents,
-    paid_total_cents,
-    fee_race_cents, fee_platform_cents, fee_admin_cents,
-    fee_tier_code, fee_tier_label,
-    category_code, category_label,
-    division_id, division_code, division_label
-  ) VALUES (
-    ?, ?,
-    ?, ?, ?, ?,
-    ?, ?, ?,
-    ?, ?, ?,
-    ?,
-    ?, ?, ?,
-    ?, ?,
-    ?, ?,
-    NULLIF(?,0), ?, ?
-  )
-  ON DUPLICATE KEY UPDATE
-    status = VALUES(status),
-    status_reason = VALUES(status_reason),
-    payment_status = VALUES(payment_status),
-    confirmed_at = VALUES(confirmed_at),
-    base_fee_cents = VALUES(base_fee_cents),
-    platform_fee_cents = VALUES(platform_fee_cents),
-    admin_fee_cents = VALUES(admin_fee_cents),
-    rounding_delta_cents = VALUES(rounding_delta_cents),
-    fee_total_cents = VALUES(fee_total_cents),
-    organizer_net_cents = VALUES(organizer_net_cents),
-    paid_total_cents = VALUES(paid_total_cents),
-    fee_race_cents = VALUES(fee_race_cents),
-    fee_platform_cents = VALUES(fee_platform_cents),
-    fee_admin_cents = VALUES(fee_admin_cents),
-    fee_tier_code = VALUES(fee_tier_code),
-    fee_tier_label = VALUES(fee_tier_label),
-    category_code = VALUES(category_code),
-    category_label = VALUES(category_label),
-    division_id = VALUES(division_id),
-    division_code = VALUES(division_code),
-    division_label = VALUES(division_label)
-";
-$stmt = $conn->prepare($sql);
+        // FIX: rimosso blocco che usava $fees[...] (variabile non definita qui)
 
+        // sicurezza: mysqli non digerisce NULL sugli "i"
+        if ($division_id_db === null) $division_id_db = 0;
 
- // sicurezza: mysqli non digerisce NULL sugli "i"
-if ($division_id_db === null) $division_id_db = 0;
+        dbg_stmt("before UPSERT prepare");
 
-$user_id = (int)($u['id'] ?? 0);
+        // 6) UPSERT (registrations)
+        $sql = "
+          INSERT INTO registrations (
+            race_id, user_id,
+            status, status_reason, payment_status, confirmed_at,
+            base_fee_cents, platform_fee_cents, admin_fee_cents,
+            rounding_delta_cents, fee_total_cents, organizer_net_cents,
+            paid_total_cents,
+            fee_race_cents, fee_platform_cents, fee_admin_cents,
+            fee_tier_code, fee_tier_label,
+            category_code, category_label,
+            division_id, division_code, division_label,
+            championship_id, membership_number, is_member
+          ) VALUES (
+            ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?,
+            ?, ?, ?,
+            ?,
+            ?, ?, ?,
+            ?, ?,
+            ?, ?,
+            NULLIF(?,0), ?, ?,
+            NULLIF(?,0), NULLIF(?,''), ?
+          )
+          ON DUPLICATE KEY UPDATE
+            championship_id     = VALUES(championship_id),
+            membership_number   = VALUES(membership_number),
+            is_member           = VALUES(is_member),
 
-$stmt->bind_param(
-  "iissssiiiiiiiiiissssiss",
-  $race_id,
-  $user_id,
-  $status_db,
-  $status_reason_db,
-  $payment_status_db,
-  $confirmed_at_db,
-  $base_fee_cents_db,
-  $platform_fee_cents_db,
-  $admin_fee_cents_db,
-  $rounding_delta_cents_db,
-  $fee_total_cents_db,
-  $organizer_net_cents_db,
-  $paid_total_cents_db,
-  $fee_race_cents_db,
-  $fee_platform_cents_db,
-  $fee_admin_cents_db,
-  $tier_code_db,
-  $tier_label_db,
-  $cat_code_db,
-  $cat_label_db,
-  $division_id_db,
-  $division_code_db,
-  $division_label_db
-);
+            status              = VALUES(status),
+            status_reason       = VALUES(status_reason),
+            payment_status      = VALUES(payment_status),
+            confirmed_at        = VALUES(confirmed_at),
 
+            base_fee_cents      = VALUES(base_fee_cents),
+            platform_fee_cents  = VALUES(platform_fee_cents),
+            admin_fee_cents     = VALUES(admin_fee_cents),
+            rounding_delta_cents= VALUES(rounding_delta_cents),
+            fee_total_cents     = VALUES(fee_total_cents),
+            organizer_net_cents = VALUES(organizer_net_cents),
+            paid_total_cents    = VALUES(paid_total_cents),
 
+            fee_race_cents      = VALUES(fee_race_cents),
+            fee_platform_cents  = VALUES(fee_platform_cents),
+            fee_admin_cents     = VALUES(fee_admin_cents),
 
+            fee_tier_code       = VALUES(fee_tier_code),
+            fee_tier_label      = VALUES(fee_tier_label),
 
+            category_code       = VALUES(category_code),
+            category_label      = VALUES(category_label),
 
-       if (!$stmt->execute()) {
-  $msg = $stmt->error ?: $conn->error;
-  $stmt->close();
-  throw new RuntimeException($msg);
-}
+            division_id         = VALUES(division_id),
+            division_code       = VALUES(division_code),
+            division_label      = VALUES(division_label)
+        ";
 
+        $stmt = $conn->prepare($sql);
+        if (!$stmt) throw new RuntimeException($conn->error ?: 'Prepare failed');
+
+        $stmt->bind_param(
+          "iissssiiiiiiiiiissssissisi",
+          $race_id, $user_id,
+          $status_db, $status_reason_db, $payment_status_db, $confirmed_at_db,
+          $base_fee_cents_db, $platform_fee_cents_db, $admin_fee_cents_db,
+          $rounding_delta_cents_db, $fee_total_cents_db, $organizer_net_cents_db,
+          $paid_total_cents_db,
+          $fee_race_cents_db, $fee_platform_cents_db, $fee_admin_cents_db,
+          $tier_code_db, $tier_label_db,
+          $cat_code_db, $cat_label_db,
+          $division_id_db, $division_code_db, $division_label_db,
+          $championship_id_db, $membership_number_db, $is_member_db
+        );
+
+        dbg_stmt("before UPSERT execute");
+
+        $ok = $stmt->execute();
+
+        dbg_stmt("after UPSERT execute (ok=" . ($ok ? "1" : "0") . ")");
+
+        if (!$ok) {
+          $msg = $stmt->error ?: $conn->error;
+          $stmt->close();
+          $stmt = null;
+          throw new RuntimeException($msg);
+        }
+
+        dbg_stmt("before UPSERT close");
         $stmt->close();
+        $stmt = null;
+        dbg_stmt("after UPSERT close");
+        dbg_stmt("before reg_id");
 
         // recupero reg_id
         $reg_id = (int)$conn->insert_id;
@@ -529,20 +585,19 @@ $stmt->bind_param(
     // -------------------------
     if ($action === 'cancel') {
       try {
-      $stmt = $conn->prepare("
-  UPDATE registrations
-  SET
-    status = 'cancelled',
-    status_reason = 'CANCELLED_BY_USER',
-    payment_status = 'unpaid',
-    confirmed_at = NULL,
-    paid_total_cents = 0,
-    paid_at = NULL
-  WHERE race_id = ? AND user_id = ?
-  LIMIT 1
-");
-$stmt->bind_param("ii", $race_id, $u['id']);
-
+        $stmt = $conn->prepare("
+          UPDATE registrations
+          SET
+            status = 'cancelled',
+            status_reason = 'CANCELLED_BY_USER',
+            payment_status = 'unpaid',
+            confirmed_at = NULL,
+            paid_total_cents = 0,
+            paid_at = NULL
+          WHERE race_id = ? AND user_id = ?
+          LIMIT 1
+        ");
+        $stmt->bind_param("ii", $race_id, $u['id']);
         $stmt->execute();
         $stmt->close();
 
@@ -580,14 +635,66 @@ $stmt->bind_param("ii", $race_id, $u['id']);
   }
 }
 
+  // ======================================================
+  // Campionato: verifica se la gara è collegata a un campionato
+  // ======================================================
+  $championship_id = null;
+
+  $stmtC = $conn->prepare("
+    SELECT championship_id
+    FROM championship_races
+    WHERE race_id = ?
+    LIMIT 1
+  ");
+  $stmtC->bind_param("i", $race_id);
+  $stmtC->execute();
+  $resC = $stmtC->get_result();
+  if ($rowC = $resC->fetch_assoc()) {
+    $championship_id = (int)$rowC['championship_id'];
+  }
+  $stmtC->close();
+
+  $membership_number = null;
+
+if ($championship_id) {
+  $membership_number = isset($_POST['membership_number'])
+    ? trim((string)$_POST['membership_number'])
+    : null;
+
+  if ($membership_number === null || $membership_number === '') {
+    $membership_number = $profile_membership ?? null;
+  }
+}
+
 // ======================================================
 // Quota (preview)
 // ======================================================
-[$tier_code_preview, $tier_label_preview, $base_fee_cents_preview] = race_fee_pick_tier($race);
+[$tier_code_preview, $tier_label_preview, $base_fee_cents_preview, $is_member_preview] =
+  race_fee_final($conn, $race, $championship_id, $membership_number);
+
 $platform_settings = get_platform_settings($conn);
 $admin_settings    = get_admin_settings($conn, (int)($race['admin_user_id'] ?? 0));
 $fees_preview      = calc_fees_total((int)$base_fee_cents_preview, $platform_settings, $admin_settings);
 $fee_total_cents_preview = (int)($fees_preview['total_cents'] ?? 0);
+
+$member_banner_html = '';
+
+if (!empty($championship_id) && !empty($membership_number)) {
+  if (!empty($is_member_preview)) {
+    $member_banner_html =
+      '<div style="margin-top:8px;padding:8px;border:1px solid #b7e1b7;background:#f2fff2;">' .
+      '<b>Quota tesserato campionato applicata ✅</b>' .
+      '<div style="font-size:12px;font-weight:800;color:#666;margin-top:2px;">Tessera: ' .
+      htmlspecialchars((string)$membership_number, ENT_QUOTES) .
+      '</div></div>';
+  } else {
+    $member_banner_html =
+      '<div style="margin-top:8px;padding:8px;border:1px solid #ffe08a;background:#fff8e1;">' .
+      '<b>Tessera non trovata</b>' .
+      '<div style="font-size:12px;font-weight:800;color:#666;margin-top:2px;">Quota standard applicata.</div>' .
+      '</div>';
+  }
+}
 
 // ======================================================
 // PAGE
@@ -599,7 +706,6 @@ page_header($pageTitle);
 <section style="margin:12px 0 16px;padding:16px;border:1px solid #ddd;border-radius:12px;">
   <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;">
 
-    <!-- COLONNA SX: Titolo + contesto -->
     <div style="min-width:260px;flex:1;">
       <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#666;">Gara</div>
 
@@ -613,7 +719,6 @@ page_header($pageTitle);
       </div>
     </div>
 
-    <!-- COLONNA CENTRO: luogo + data -->
     <div style="min-width:240px;display:grid;gap:10px;">
       <div>
         <div style="font-size:12px;color:#666;">Luogo</div>
@@ -625,7 +730,6 @@ page_header($pageTitle);
       </div>
     </div>
 
-    <!-- COLONNA DX: disciplina + quota + stato -->
     <div style="min-width:240px;display:grid;gap:10px;">
       <div>
         <div style="font-size:12px;color:#666;">Disciplina</div>
@@ -639,6 +743,7 @@ page_header($pageTitle);
           <div style="font-size:12px;font-weight:800;color:#666;margin-top:2px;">
             <?php echo h((string)$tier_label_preview); ?>
           </div>
+          <?php echo $member_banner_html; ?>
         </div>
       </div>
 
@@ -665,11 +770,8 @@ page_header($pageTitle);
   ?>
   <div style="margin-top:6px;">
     <div style="font-size:12px;color:#666;">La tua iscrizione</div>
-    <div style="margin:6px 0;font-size:14px;color:#555;">
-  Stato iscrizione:
-</div>
+    <div style="margin:6px 0;font-size:14px;color:#555;">Stato iscrizione:</div>
 
-    <!-- BADGE ROW -->
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px;">
       <span style="display:inline-block;padding:4px 10px;border-radius:999px;border:1px solid #ddd;font-weight:900;">
         <?php echo h(it_status($st)); ?>
@@ -688,7 +790,6 @@ page_header($pageTitle);
       <?php endif; ?>
     </div>
 
-    <!-- HELP TEXT -->
     <div style="margin-top:6px;color:#555;font-size:13px;">
       <?php echo h(it_myreg_help($st, $ps)); ?>
     </div>
@@ -709,7 +810,6 @@ $needsPayInfo = in_array($st, ['pending','confirmed'], true) && $ps !== 'paid';
 $payment_mode = (string)($race['payment_mode'] ?? 'manual');
 if (!in_array($payment_mode, ['manual','stripe','both'], true)) $payment_mode = 'manual';
 
-// istruzioni manuali (testo libero + fallback IBAN)
 $instr_raw = trim((string)($race['payment_instructions'] ?? ''));
 
 if ($instr_raw === '') {
@@ -727,27 +827,22 @@ $has_manual_info = ($instr_raw !== '');
 ?>
 
 <?php if ($needsPayInfo): ?>
-
- <?php if ($payment_mode === 'stripe' || $payment_mode === 'both'): ?>
-  <div style="margin-top:10px;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
-    <div style="font-weight:900;margin-bottom:6px;">Pagamento online</div>
-
-    <div style="color:#444;font-size:14px;line-height:1.4;margin-bottom:10px;">
-      Pagamento con carta (Stripe) previsto, ma non ancora attivo su questa versione.
+  <?php if ($payment_mode === 'stripe' || $payment_mode === 'both'): ?>
+    <div style="margin-top:10px;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fafafa;">
+      <div style="font-weight:900;margin-bottom:6px;">Pagamento online</div>
+      <div style="color:#444;font-size:14px;line-height:1.4;margin-bottom:10px;">
+        Pagamento con carta (Stripe) previsto, ma non ancora attivo su questa versione.
+      </div>
+      <button type="button" disabled
+        style="padding:10px 14px;border:1px solid #ddd;border-radius:10px;background:#eee;color:#666;font-weight:800;cursor:not-allowed;">
+        Paga ora
+      </button>
+      <div style="margin-top:8px;font-size:12px;color:#777;">
+        (In arrivo: pagamento con carta e ricevuta automatica)
+      </div>
     </div>
-
-    <button type="button" disabled
-      style="padding:10px 14px;border:1px solid #ddd;border-radius:10px;background:#eee;color:#666;font-weight:800;cursor:not-allowed;">
-      Paga ora
-    </button>
-
-    <div style="margin-top:8px;font-size:12px;color:#777;">
-      (In arrivo: pagamento con carta e ricevuta automatica)
-    </div>
-  </div>
+  <?php endif; ?>
 <?php endif; ?>
-<?php endif; ?>
-
 
 <nav style="margin:10px 0 12px;">
   <a href="event_public.php?id=<?php echo (int)$race['event_id']; ?>"
@@ -755,31 +850,6 @@ $has_manual_info = ($instr_raw !== '');
     ← Torna all’evento
   </a>
 </nav>
-
-
-<?php /*
-
-<p>
-  <b>Organizzazione:</b> <?php echo h($race['org_name'] ?? ''); ?><br>
-  <b>Evento:</b> <?php echo h($race['event_title'] ?? ''); ?><br>
-  <b>Luogo:</b> <?php echo h($race['location'] ?? '-'); ?><br>
-  <b>Data/Ora:</b> <?php echo h(it_datetime($race['start_at'] ?? null)); ?><br>
-  <b>Disciplina:</b> <?php echo h($race['discipline'] ?? '-'); ?><br>
-  <b>Stato gara:</b> <?php echo h(it_race_status((string)($race['status'] ?? ''))); ?>
-</p>
-
-*/ ?>
-
-
-<?php /*
-
-<p>
-  <b>Quota iscrizione:</b>
-  € <?php echo h(cents_to_eur((int)$fee_total_cents_preview)); ?>
-  <small>(<?php echo h($tier_label_preview); ?>)</small>
-</p>
-
-*/ ?>
 
 <?php if (
   !empty($myReg)
@@ -801,11 +871,9 @@ $has_manual_info = ($instr_raw !== '');
   In elenco compaiono solo gli atleti con iscrizione <b>confermata</b> e <b>pagata</b>.
 </p>
 
-
 <p style="color:#555;margin-top:-6px;">
   Totale confermati: <b><?php echo (int)count($publicRegs); ?></b>
 </p>
-
 
 <?php $my_uid = (int)($u['id'] ?? 0); ?>
 
@@ -815,12 +883,11 @@ $has_manual_info = ($instr_raw !== '');
   <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;">
     <thead>
       <tr>
-     <th>Pettorale</th>
-<th>Cognome</th>
-<th>Nome</th>
-<th>Team / Club</th>
-<th>Città</th>
-
+        <th>Pettorale</th>
+        <th>Cognome</th>
+        <th>Nome</th>
+        <th>Team / Club</th>
+        <th>Città</th>
       </tr>
     </thead>
     <tbody>
@@ -828,25 +895,19 @@ $has_manual_info = ($instr_raw !== '');
         <?php $isMe = ($my_uid > 0 && (int)($r['reg_user_id'] ?? 0) === $my_uid); ?>
 
         <tr style="<?php echo $isMe ? 'background:#fafafa;border-left:4px solid #111;' : ''; ?>">
-
-  <td><?php echo h((string)($r['bib_number'] ?? '')); ?></td>
-
-  <td><?php echo h((string)($r['last_name'] ?? '')); ?></td>
-
-  <td>
-    <?php echo h((string)($r['first_name'] ?? '')); ?>
-    <?php if ($isMe): ?>
-      <span style="margin-left:6px;padding:2px 8px;border-radius:999px;border:1px solid #ddd;font-weight:900;font-size:12px;">
-        Tu
-      </span>
-    <?php endif; ?>
-  </td>
-
-  <td><?php echo h((string)($r['club_name'] ?? '')); ?></td>
-
-  <td><?php echo h((string)($r['city'] ?? '')); ?></td>
-</tr>
-
+          <td><?php echo h((string)($r['bib_number'] ?? '')); ?></td>
+          <td><?php echo h((string)($r['last_name'] ?? '')); ?></td>
+          <td>
+            <?php echo h((string)($r['first_name'] ?? '')); ?>
+            <?php if ($isMe): ?>
+              <span style="margin-left:6px;padding:2px 8px;border-radius:999px;border:1px solid #ddd;font-weight:900;font-size:12px;">
+                Tu
+              </span>
+            <?php endif; ?>
+          </td>
+          <td><?php echo h((string)($r['club_name'] ?? '')); ?></td>
+          <td><?php echo h((string)($r['city'] ?? '')); ?></td>
+        </tr>
       <?php endforeach; ?>
     </tbody>
   </table>
@@ -897,7 +958,41 @@ $has_manual_info = ($instr_raw !== '');
       <p><small>Compila e conferma per inviare la richiesta di iscrizione.</small></p>
 
       <form method="post">
-        <input type="hidden" name="action" value="register">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px;">
+
+          <?php if (!empty($championship_id)) : ?>
+            <button type="submit"
+                    name="action"
+                    value="preview_fee"
+                    style="padding:10px 14px;border:1px solid #ddd;border-radius:10px;background:#fafafa;font-weight:800;"
+                    <?php echo $canRegister ? '' : 'disabled'; ?>>
+              Aggiorna quota
+            </button>
+          <?php endif; ?>
+
+          <button type="submit"
+                  name="action"
+                  value="register"
+                  style="padding:10px 14px;"
+                  <?php echo $canRegister ? '' : 'disabled'; ?>>
+            Iscriviti
+          </button>
+
+        </div>
+
+        <?php if (!empty($championship_id)) : ?>
+          <div style="margin:10px 0;">
+            <label for="membership_number"><b>Numero tessera (campionato)</b></label><br>
+            <input
+              type="text"
+              id="membership_number"
+              name="membership_number"
+              value="<?= htmlspecialchars((string)($_POST['membership_number'] ?? ($profile_membership ?? '')), ENT_QUOTES) ?>"
+              placeholder="Es. 7923870"
+            >
+            <small>Se sei tesserato al campionato, inserisci il numero tessera per applicare la quota dedicata.</small>
+          </div>
+        <?php endif; ?>
 
         <?php if ($hasDivisions): ?>
           <div style="margin:10px 0;">
@@ -913,9 +1008,6 @@ $has_manual_info = ($instr_raw !== '');
           </div>
         <?php endif; ?>
 
-        <button type="submit" style="padding:10px 14px;" <?php echo $canRegister ? '' : 'disabled'; ?>>
-          Iscriviti
-        </button>
       </form>
 
     <?php else: ?>

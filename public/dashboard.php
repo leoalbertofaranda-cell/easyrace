@@ -42,6 +42,7 @@ foreach ($orgs as $o) {
     (int)($o['stripe_payouts_enabled'] ?? 0) === 1 &&
     (int)($o['stripe_details_submitted'] ?? 0) === 1;
   if ($ready) $stripe_ready_count++;
+}
 
 $is_owner_any = false;
 $first_owner_org_id = 0;
@@ -53,9 +54,8 @@ foreach ($orgs as $o) {
   }
 }
 
-
-}
 $stripe_any_ready = ($stripe_ready_count > 0);
+
 
 
 page_header('Dashboard');
